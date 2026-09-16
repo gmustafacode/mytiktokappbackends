@@ -1,540 +1,813 @@
 const axios = require("axios");
-const { randomUUID, createCipheriv, createDecipheriv, createHash } = require("crypto");
 
-// ============================================================
-// TIKTOK TOKEN STORE
-// ============================================================
-// NOTE:
-// Ye temporary in-memory storage hai.
-// Production mein tokens database mein store karna chahiye.
-// ============================================================
+const {
+    randomUUID,
+    randomBytes,
+    createCipheriv,
+    createDecipheriv,
+    createHash
+} = require("crypto");
 
-const tokenStore = {
-    accessToken: null,
-    refreshToken: null,
-    expiresAt: null,
-    openId: null,
-    scope: null,
-};
+const TIKTOK_AUTHORIZE_URL =
+    "https://www.tiktok.com/v2/auth/authorize/";
 
-const stateStore = new Set();
-const tokenCookieName = "tiktok_session";
-const stateCookieName = "tiktok_oauth_state";
+const TIKTOK_TOKEN_URL =
+    "https://open.tiktokapis.com/v2/oauth/token/";
 
-function getSessionKey() {
+const TIKTOK_CREATOR_INFO_URL =
+    "https://open.tiktokapis.com/v2/post/publish/creator_info/query/";
+
+const TIKTOK_VIDEO_INIT_URL =
+    "https://open.tiktokapis.com/v2/post/publish/video/init/";
+
+const TIKTOK_STATUS_URL =
+    "https://open.tiktokapis.com/v2/post/publish/status/fetch/";
+
+const TOKEN_COOKIE = "tiktok_session";
+const STATE_COOKIE = "tiktok_oauth_state";
+
+/*
+|--------------------------------------------------------------------------
+| Testing configuration
+|--------------------------------------------------------------------------
+|
+| Unaudited TikTok applications can be restricted to private accounts.
+|
+| Keep SELF_ONLY while testing.
+|
+| After TikTok approves the required product/scopes,
+| this can be changed according to the approved configuration.
+|
+*/
+
+const DEFAULT_PRIVACY_LEVEL =
+    process.env.TIKTOK_PRIVACY_LEVEL || "SELF_ONLY";
+
+/*
+|--------------------------------------------------------------------------
+| Encryption key
+|--------------------------------------------------------------------------
+*/
+
+function getEncryptionKey() {
     if (!process.env.SESSION_SECRET) {
-        throw new Error("SESSION_SECRET is missing in .env");
+        throw new Error(
+            "SESSION_SECRET is missing."
+        );
     }
 
-    return createHash("sha256").update(process.env.SESSION_SECRET).digest();
+    return createHash("sha256")
+        .update(process.env.SESSION_SECRET)
+        .digest();
 }
 
-function encrypt(value) {
-    const iv = require("crypto").randomBytes(12);
-    const cipher = createCipheriv("aes-256-gcm", getSessionKey(), iv);
-    const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
-    return [iv.toString("base64url"), cipher.getAuthTag().toString("base64url"), encrypted.toString("base64url")].join(".");
+/*
+|--------------------------------------------------------------------------
+| Encrypt
+|--------------------------------------------------------------------------
+*/
+
+function encrypt(data) {
+    const key = getEncryptionKey();
+
+    const iv = randomBytes(12);
+
+    const cipher = createCipheriv(
+        "aes-256-gcm",
+        key,
+        iv
+    );
+
+    const encrypted = Buffer.concat([
+        cipher.update(
+            JSON.stringify(data),
+            "utf8"
+        ),
+        cipher.final()
+    ]);
+
+    const authTag = cipher.getAuthTag();
+
+    return [
+        iv.toString("base64url"),
+        authTag.toString("base64url"),
+        encrypted.toString("base64url")
+    ].join(".");
 }
+
+/*
+|--------------------------------------------------------------------------
+| Decrypt
+|--------------------------------------------------------------------------
+*/
 
 function decrypt(value) {
     try {
-        const [ivText, tagText, encryptedText] = value.split(".");
-        const decipher = createDecipheriv("aes-256-gcm", getSessionKey(), Buffer.from(ivText, "base64url"));
-        decipher.setAuthTag(Buffer.from(tagText, "base64url"));
+        if (!value) {
+            return null;
+        }
+
+        const [
+            ivText,
+            authTagText,
+            encryptedText
+        ] = value.split(".");
+
+        if (
+            !ivText ||
+            !authTagText ||
+            !encryptedText
+        ) {
+            return null;
+        }
+
+        const key = getEncryptionKey();
+
+        const decipher = createDecipheriv(
+            "aes-256-gcm",
+            key,
+            Buffer.from(
+                ivText,
+                "base64url"
+            )
+        );
+
+        decipher.setAuthTag(
+            Buffer.from(
+                authTagText,
+                "base64url"
+            )
+        );
+
         const decrypted = Buffer.concat([
-            decipher.update(Buffer.from(encryptedText, "base64url")),
+            decipher.update(
+                Buffer.from(
+                    encryptedText,
+                    "base64url"
+                )
+            ),
             decipher.final()
         ]);
-        return JSON.parse(decrypted.toString("utf8"));
+
+        return JSON.parse(
+            decrypted.toString("utf8")
+        );
     } catch {
         return null;
     }
 }
 
+/*
+|--------------------------------------------------------------------------
+| Cookie parser
+|--------------------------------------------------------------------------
+*/
+
 function parseCookies(req) {
-    return Object.fromEntries((req.headers.cookie || "").split(";").filter(Boolean).map((part) => {
-        const index = part.indexOf("=");
-        return [part.slice(0, index).trim(), decodeURIComponent(part.slice(index + 1))];
-    }));
-}
+    const cookieHeader =
+        req.headers.cookie || "";
 
-function appendCookie(res, name, value, maxAge) {
-    const cookie = `${name}=${encodeURIComponent(value)}; Max-Age=${maxAge}; Path=/; HttpOnly; SameSite=Lax${process.env.NODE_ENV === "production" ? "; Secure" : ""}`;
-    const existing = res.getHeader("Set-Cookie");
-    res.setHeader("Set-Cookie", existing ? [].concat(existing, cookie) : cookie);
-}
-
-function saveTokenCookie(res, payload) {
-    appendCookie(res, tokenCookieName, encrypt({
-        accessToken: payload.access_token,
-        refreshToken: payload.refresh_token || null,
-        expiresAt: payload.expires_in ? Date.now() + Number(payload.expires_in) * 1000 : null,
-        openId: payload.open_id || null,
-        scope: payload.scope || null
-    }), 30 * 24 * 60 * 60);
-}
-
-function saveStateCookie(res, state) {
-    appendCookie(res, stateCookieName, encrypt({ state }), 10 * 60);
-}
-
-function getTokenFromRequest(req) {
-    const cookies = parseCookies(req);
-    const session = cookies[tokenCookieName] ? decrypt(cookies[tokenCookieName]) : null;
-    return session?.accessToken || tokenStore.accessToken;
-}
-
-function getStateFromRequest(req) {
-    const cookies = parseCookies(req);
-    const saved = cookies[stateCookieName] ? decrypt(cookies[stateCookieName]) : null;
-    return saved?.state || null;
-}
-
-
-// ============================================================
-// SAVE TOKEN DATA
-// ============================================================
-
-function setTokenData(payload = {}) {
-    if (!payload.access_token) {
-        return;
+    if (!cookieHeader) {
+        return {};
     }
 
-    tokenStore.accessToken = payload.access_token;
-    tokenStore.refreshToken = payload.refresh_token || null;
+    const cookies = {};
 
-    tokenStore.expiresAt = payload.expires_in
-        ? Date.now() + Number(payload.expires_in) * 1000
-        : null;
+    for (const part of cookieHeader.split(";")) {
+        const index = part.indexOf("=");
 
-    tokenStore.openId = payload.open_id || null;
-    tokenStore.scope = payload.scope || null;
+        if (index === -1) {
+            continue;
+        }
+
+        const name =
+            part
+                .slice(0, index)
+                .trim();
+
+        const value =
+            part
+                .slice(index + 1)
+                .trim();
+
+        try {
+            cookies[name] =
+                decodeURIComponent(value);
+        } catch {
+            cookies[name] = value;
+        }
+    }
+
+    return cookies;
 }
 
+/*
+|--------------------------------------------------------------------------
+| Set cookie
+|--------------------------------------------------------------------------
+*/
 
-// ============================================================
-// GET STORED ACCESS TOKEN
-// ============================================================
+function setCookie(
+    res,
+    name,
+    value,
+    maxAge
+) {
+    const secure =
+        process.env.NODE_ENV === "production"
+            ? "; Secure"
+            : "";
+
+    const cookie =
+        `${name}=${encodeURIComponent(value)}` +
+        `; Max-Age=${maxAge}` +
+        `; Path=/` +
+        `; HttpOnly` +
+        `; SameSite=Lax` +
+        secure;
+
+    const existing =
+        res.getHeader("Set-Cookie");
+
+    if (existing) {
+        res.setHeader(
+            "Set-Cookie",
+            Array.isArray(existing)
+                ? [...existing, cookie]
+                : [existing, cookie]
+        );
+    } else {
+        res.setHeader(
+            "Set-Cookie",
+            cookie
+        );
+    }
+}
+
+/*
+|--------------------------------------------------------------------------
+| Clear cookie
+|--------------------------------------------------------------------------
+*/
+
+function clearCookie(res, name) {
+    setCookie(
+        res,
+        name,
+        "",
+        0
+    );
+}
+
+/*
+|--------------------------------------------------------------------------
+| Save OAuth state
+|--------------------------------------------------------------------------
+*/
+
+function saveStateCookie(
+    res,
+    state
+) {
+    setCookie(
+        res,
+        STATE_COOKIE,
+        encrypt({
+            state,
+            createdAt: Date.now()
+        }),
+        10 * 60
+    );
+}
+
+/*
+|--------------------------------------------------------------------------
+| Save TikTok session
+|--------------------------------------------------------------------------
+*/
+
+function saveTokenCookie(
+    res,
+    token
+) {
+    const expiresAt =
+        token.expires_in
+            ? Date.now() +
+              Number(token.expires_in) * 1000
+            : null;
+
+    const session = {
+        accessToken:
+            token.access_token,
+
+        refreshToken:
+            token.refresh_token || null,
+
+        expiresAt,
+
+        openId:
+            token.open_id || null,
+
+        scope:
+            token.scope || null
+    };
+
+    setCookie(
+        res,
+        TOKEN_COOKIE,
+        encrypt(session),
+        30 * 24 * 60 * 60
+    );
+}
+
+/*
+|--------------------------------------------------------------------------
+| Read TikTok session
+|--------------------------------------------------------------------------
+*/
+
+function getSession(req) {
+    const cookies =
+        parseCookies(req);
+
+    if (!cookies[TOKEN_COOKIE]) {
+        return null;
+    }
+
+    return decrypt(
+        cookies[TOKEN_COOKIE]
+    );
+}
+
+/*
+|--------------------------------------------------------------------------
+| Access token
+|--------------------------------------------------------------------------
+*/
 
 function getStoredToken(req) {
-    return req ? getTokenFromRequest(req) : tokenStore.accessToken;
+    const session =
+        getSession(req);
+
+    return (
+        session?.accessToken ||
+        null
+    );
 }
 
+/*
+|--------------------------------------------------------------------------
+| OAuth state validation
+|--------------------------------------------------------------------------
+*/
 
-// ============================================================
-// CREATE OAUTH STATE
-// ============================================================
-
-function createAndStoreState() {
-    const state = randomUUID();
-
-    stateStore.add(state);
-
-    return state;
-}
-
-
-// ============================================================
-// VALIDATE OAUTH STATE
-// ============================================================
-
-function validateState(state) {
-    const isValid =
-        typeof state === "string" &&
-        stateStore.has(state);
-
-    if (isValid) {
-        // One-time use
-        stateStore.delete(state);
+function validateRequestState(
+    req,
+    state
+) {
+    if (!state) {
+        return false;
     }
 
-    return isValid;
+    const cookies =
+        parseCookies(req);
+
+    const saved =
+        cookies[STATE_COOKIE]
+            ? decrypt(
+                cookies[STATE_COOKIE]
+            )
+            : null;
+
+    if (!saved?.state) {
+        return false;
+    }
+
+    const valid =
+        saved.state === state;
+
+    return valid;
 }
 
-function validateRequestState(req, state) {
-    return validateState(state) || getStateFromRequest(req) === state;
-}
+/*
+|--------------------------------------------------------------------------
+| Authorization URL
+|--------------------------------------------------------------------------
+*/
 
+function getTikTokAuthRequest() {
+    const clientKey =
+        process.env.TIKTOK_CLIENT_KEY;
 
-// ============================================================
-// GET TIKTOK AUTHORIZATION URL
-// ============================================================
-
-function getTikTokAuthUrl() {
-    const clientKey = process.env.TIKTOK_CLIENT_KEY;
-    const redirectUri = process.env.TIKTOK_REDIRECT_URI;
+    const redirectUri =
+        process.env.TIKTOK_REDIRECT_URI;
 
     if (!clientKey) {
-        throw new Error("TIKTOK_CLIENT_KEY is missing in .env");
+        throw new Error(
+            "TIKTOK_CLIENT_KEY is missing."
+        );
     }
 
     if (!redirectUri) {
-        throw new Error("TIKTOK_REDIRECT_URI is missing in .env");
+        throw new Error(
+            "TIKTOK_REDIRECT_URI is missing."
+        );
     }
 
-    const state = createAndStoreState();
+    const state =
+        randomUUID();
 
-    const params = new URLSearchParams({
-        client_key: clientKey,
-        response_type: "code",
-        scope: "user.info.basic,video.publish",
-        redirect_uri: redirectUri,
-        state: state,
-    });
+    const params =
+        new URLSearchParams({
+            client_key: clientKey,
+            response_type: "code",
 
-    const authUrl =
-        `https://www.tiktok.com/v2/auth/authorize/?${params.toString()}`;
+            scope:
+                "user.info.basic,video.publish,video.upload",
 
-    console.log("========================================");
-    console.log("TikTok OAuth Authorization");
-    console.log("========================================");
-    console.log("Client Key:", clientKey);
-    console.log("Redirect URI:", redirectUri);
-    console.log("State:", state);
-    console.log("Auth URL:", authUrl);
-    console.log("========================================");
+            redirect_uri:
+                redirectUri,
 
-    return authUrl;
-}
-
-function getTikTokAuthRequest() {
-    const state = randomUUID();
-    const params = new URLSearchParams({
-        client_key: process.env.TIKTOK_CLIENT_KEY,
-        response_type: "code",
-        scope: "user.info.basic,video.publish",
-        redirect_uri: process.env.TIKTOK_REDIRECT_URI,
-        state
-    });
+            state
+        });
 
     return {
         state,
-        url: `https://www.tiktok.com/v2/auth/authorize/?${params.toString()}`
+
+        url:
+            `${TIKTOK_AUTHORIZE_URL}?${params.toString()}`
     };
 }
 
+/*
+|--------------------------------------------------------------------------
+| Exchange code
+|--------------------------------------------------------------------------
+*/
 
-// ============================================================
-// EXCHANGE AUTHORIZATION CODE FOR ACCESS TOKEN
-// ============================================================
-
-async function exchangeCodeForToken(code) {
+async function exchangeCodeForToken(
+    code
+) {
     if (!code) {
-        throw new Error("TikTok authorization code is missing");
+        throw new Error(
+            "Authorization code is missing."
+        );
     }
 
-    const clientKey = process.env.TIKTOK_CLIENT_KEY;
-    const clientSecret = process.env.TIKTOK_CLIENT_SECRET;
-    const redirectUri = process.env.TIKTOK_REDIRECT_URI;
+    const clientKey =
+        process.env.TIKTOK_CLIENT_KEY;
 
-    // --------------------------------------------------------
-    // Validate ENV
-    // --------------------------------------------------------
+    const clientSecret =
+        process.env.TIKTOK_CLIENT_SECRET;
+
+    const redirectUri =
+        process.env.TIKTOK_REDIRECT_URI;
 
     if (!clientKey) {
-        throw new Error("TIKTOK_CLIENT_KEY is missing in .env");
+        throw new Error(
+            "TIKTOK_CLIENT_KEY is missing."
+        );
     }
 
     if (!clientSecret) {
-        throw new Error("TIKTOK_CLIENT_SECRET is missing in .env");
+        throw new Error(
+            "TIKTOK_CLIENT_SECRET is missing."
+        );
     }
 
     if (!redirectUri) {
-        throw new Error("TIKTOK_REDIRECT_URI is missing in .env");
+        throw new Error(
+            "TIKTOK_REDIRECT_URI is missing."
+        );
     }
 
+    const params =
+        new URLSearchParams();
 
-    // --------------------------------------------------------
-    // TikTok authorization code may be URL encoded.
-    // Decode it before sending it to token endpoint.
-    // --------------------------------------------------------
+    params.append(
+        "client_key",
+        clientKey
+    );
 
-    let decodedCode;
+    params.append(
+        "client_secret",
+        clientSecret
+    );
 
-    try {
-        decodedCode = decodeURIComponent(code);
-    } catch (error) {
-        decodedCode = code;
-    }
+    params.append(
+        "code",
+        code
+    );
 
+    params.append(
+        "grant_type",
+        "authorization_code"
+    );
 
-    // --------------------------------------------------------
-    // Build form-urlencoded request
-    // --------------------------------------------------------
+    params.append(
+        "redirect_uri",
+        redirectUri
+    );
 
-    const params = new URLSearchParams();
-
-    params.append("client_key", clientKey);
-    params.append("client_secret", clientSecret);
-    params.append("code", decodedCode);
-    params.append("grant_type", "authorization_code");
-    params.append("redirect_uri", redirectUri);
-
-
-    // --------------------------------------------------------
-    // Debug
-    // NEVER print client_secret or access token.
-    // --------------------------------------------------------
-
-    console.log("========================================");
-    console.log("TikTok Token Exchange");
-    console.log("========================================");
-    console.log("Client Key:", clientKey);
-    console.log("Code received:", Boolean(code));
-    console.log("Code length:", decodedCode.length);
-    console.log("Grant Type:", "authorization_code");
-    console.log("Redirect URI:", redirectUri);
-    console.log("========================================");
-
-
-    try {
-        const response = await axios.post(
-            "https://open.tiktokapis.com/v2/oauth/token/",
+    const response =
+        await axios.post(
+            TIKTOK_TOKEN_URL,
             params.toString(),
             {
                 headers: {
                     "Content-Type":
-                        "application/x-www-form-urlencoded",
+                        "application/x-www-form-urlencoded"
                 },
 
-                timeout: 15000,
+                timeout: 15000
             }
         );
 
+    const data =
+        response.data;
 
-        const payload = response.data;
-
-
-        console.log("========================================");
-        console.log("TikTok Token Response");
-        console.log("========================================");
-
-        console.log({
-            hasAccessToken: Boolean(payload?.access_token),
-            hasRefreshToken: Boolean(payload?.refresh_token),
-            openId: payload?.open_id || null,
-            scope: payload?.scope || null,
-            expiresIn: payload?.expires_in || null,
-            error: payload?.error || null,
-            errorDescription:
-                payload?.error_description || null,
-        });
-
-        console.log("========================================");
-
-
-        // ----------------------------------------------------
-        // Handle TikTok OAuth error
-        // ----------------------------------------------------
-
-        if (payload?.error) {
-            throw new Error(
-                payload.error_description ||
-                payload.error ||
-                "TikTok OAuth token exchange failed"
+    if (data?.error) {
+        const error =
+            new Error(
+                data.error_description ||
+                data.error ||
+                "TikTok token exchange failed."
             );
-        }
 
-
-        // ----------------------------------------------------
-        // Make sure access token exists
-        // ----------------------------------------------------
-
-        if (!payload?.access_token) {
-            throw new Error(
-                "TikTok did not return an access token"
-            );
-        }
-
-
-        // ----------------------------------------------------
-        // Save token
-        // ----------------------------------------------------
-
-        setTokenData(payload);
-
-
-        return payload;
-
-    } catch (error) {
-
-        const tiktokError =
-            error.response?.data || error.message;
-
-        console.error("========================================");
-        console.error("TikTok Token Exchange ERROR");
-        console.error("========================================");
-        console.error(tiktokError);
-        console.error("========================================");
+        error.response = {
+            data,
+            status:
+                response.status
+        };
 
         throw error;
     }
-}
 
-
-// ============================================================
-// GET CREATOR INFO
-// ============================================================
-
-async function getCreatorInfo(req) {
-    const accessToken = getStoredToken(req);
-
-    if (!accessToken) {
+    if (!data?.access_token) {
         throw new Error(
-            "No TikTok access token available. Complete OAuth first."
+            "TikTok did not return an access token."
         );
     }
 
+    return data;
+}
 
-    try {
-        const response = await axios.post(
-            "https://open.tiktokapis.com/v2/post/publish/creator_info/query/",
+/*
+|--------------------------------------------------------------------------
+| Creator information
+|--------------------------------------------------------------------------
+*/
+
+async function getCreatorInfo(req) {
+    const accessToken =
+        getStoredToken(req);
+
+    if (!accessToken) {
+        throw new Error(
+            "TikTok is not connected."
+        );
+    }
+
+    const response =
+        await axios.post(
+            TIKTOK_CREATOR_INFO_URL,
             {},
             {
                 headers: {
-                    Authorization: `Bearer ${accessToken}`,
-                    "Content-Type": "application/json",
+                    Authorization:
+                        `Bearer ${accessToken}`,
+
+                    "Content-Type":
+                        "application/json"
                 },
+
+                timeout: 15000
             }
         );
 
-        return response.data;
-
-    } catch (error) {
-
-        console.error(
-            "TikTok Creator Info Error:",
-            error.response?.data || error.message
-        );
-
-        throw error;
-    }
+    return response.data;
 }
 
+/*
+|--------------------------------------------------------------------------
+| Initialize FILE_UPLOAD Direct Post
+|--------------------------------------------------------------------------
+*/
 
-// ============================================================
-// INITIALIZE VIDEO PUBLISH
-// ============================================================
-
-async function initVideoPublish(postPayload) {
-    const accessToken = getStoredToken();
+async function initializeFileUpload(
+    req,
+    {
+        title,
+        privacyLevel,
+        disableDuet,
+        disableComment,
+        disableStitch
+    }
+) {
+    const accessToken =
+        getStoredToken(req);
 
     if (!accessToken) {
         throw new Error(
-            "No TikTok access token available. Complete OAuth first."
+            "TikTok is not connected."
         );
     }
 
-    if (!postPayload || typeof postPayload !== "object") {
-        throw new Error(
-            "TikTok video publish payload is required"
-        );
-    }
-
-
-    try {
-        const response = await axios.post(
-            "https://open.tiktokapis.com/v2/post/publish/video/init/",
-            postPayload,
-            {
-                headers: {
-                    Authorization: `Bearer ${accessToken}`,
-                    "Content-Type": "application/json",
-                },
-            }
-        );
-
-        return response.data;
-
-    } catch (error) {
-
-        console.error(
-            "TikTok Video Init Error:",
-            error.response?.data || error.message
-        );
-
-        throw error;
-    }
-}
-
-async function uploadVideoToTikTok(file, postOptions = {}, req) {
-    const accessToken = getStoredToken(req);
-
-    if (!accessToken) {
-        throw new Error("No TikTok access token available. Complete OAuth first.");
-    }
-
-    if (!file?.buffer?.length) {
-        throw new Error("A video file is required.");
-    }
-
-    const videoSize = file.buffer.length;
-    const maxChunkSize = 64 * 1024 * 1024;
-    const chunkSize = videoSize <= maxChunkSize
-        ? videoSize
-        : 10 * 1024 * 1024;
-    const totalChunkCount = Math.ceil(videoSize / chunkSize);
-
-    const initPayload = {
+    const payload = {
         post_info: {
-            title: postOptions.title || "Posted from my app",
-            privacy_level: "SELF_ONLY",
-            disable_duet: false,
-            disable_comment: false,
-            disable_stitch: false
+            title:
+                title ||
+                "Posted from CortexAI",
+
+            privacy_level:
+                privacyLevel ||
+                DEFAULT_PRIVACY_LEVEL,
+
+            disable_duet:
+                Boolean(disableDuet),
+
+            disable_comment:
+                Boolean(disableComment),
+
+            disable_stitch:
+                Boolean(disableStitch)
         },
+
         source_info: {
-            source: "FILE_UPLOAD",
-            video_size: videoSize,
-            chunk_size: chunkSize,
-            total_chunk_count: totalChunkCount
+            source:
+                "FILE_UPLOAD"
         }
     };
 
-    const initResponse = await axios.post(
-        "https://open.tiktokapis.com/v2/post/publish/video/init/",
-        initPayload,
+    return axios.post(
+        TIKTOK_VIDEO_INIT_URL,
+        payload,
         {
             headers: {
-                Authorization: `Bearer ${accessToken}`,
-                "Content-Type": "application/json; charset=UTF-8"
+                Authorization:
+                    `Bearer ${accessToken}`,
+
+                "Content-Type":
+                    "application/json"
             },
+
             timeout: 30000
         }
     );
+}
 
-    const initData = initResponse.data;
-    const publishId = initData?.data?.publish_id;
-    const uploadUrl = initData?.data?.upload_url;
+/*
+|--------------------------------------------------------------------------
+| Upload video
+|--------------------------------------------------------------------------
+*/
 
-    if (initData?.error?.code && initData.error.code !== "ok") {
-        const error = new Error(initData.error.message || "TikTok upload initialization failed");
-        error.response = { data: initData, status: 400 };
+async function uploadVideoToTikTok(
+    file,
+    options,
+    req
+) {
+    if (!file?.buffer?.length) {
+        throw new Error(
+            "Video file is required."
+        );
+    }
+
+    const videoSize =
+        file.buffer.length;
+
+    const MAX_CHUNK_SIZE =
+        64 * 1024 * 1024;
+
+    let chunkSize;
+
+    if (
+        videoSize <= MAX_CHUNK_SIZE
+    ) {
+        chunkSize =
+            videoSize;
+    } else {
+        chunkSize =
+            10 * 1024 * 1024;
+    }
+
+    const totalChunkCount =
+        Math.ceil(
+            videoSize /
+            chunkSize
+        );
+
+    const initResponse =
+        await initializeFileUpload(
+            req,
+            {
+                title:
+                    options.title,
+
+                privacyLevel:
+                    options.privacyLevel,
+
+                disableDuet:
+                    options.disableDuet,
+
+                disableComment:
+                    options.disableComment,
+
+                disableStitch:
+                    options.disableStitch
+            }
+        );
+
+    const initData =
+        initResponse.data;
+
+    if (
+        initData?.error?.code &&
+        initData.error.code !== "ok"
+    ) {
+        const error =
+            new Error(
+                initData.error.message ||
+                "TikTok initialization failed."
+            );
+
+        error.response = {
+            data: initData,
+
+            status:
+                initResponse.status ||
+                400
+        };
+
         throw error;
     }
 
-    if (!publishId || !uploadUrl) {
-        throw new Error("TikTok did not return publish_id or upload_url.");
+    const publishId =
+        initData?.data?.publish_id;
+
+    const uploadUrl =
+        initData?.data?.upload_url;
+
+    if (!publishId) {
+        throw new Error(
+            "TikTok did not return publish_id."
+        );
+    }
+
+    if (!uploadUrl) {
+        throw new Error(
+            "TikTok did not return upload_url."
+        );
     }
 
     let uploadedBytes = 0;
 
-    for (let start = 0; start < videoSize; start += chunkSize) {
-        const end = Math.min(start + chunkSize, videoSize);
-        const chunk = file.buffer.subarray(start, end);
+    for (
+        let start = 0;
+        start < videoSize;
+        start += chunkSize
+    ) {
+        const end =
+            Math.min(
+                start + chunkSize,
+                videoSize
+            );
 
-        await axios.put(uploadUrl, chunk, {
-            headers: {
-                "Content-Type": file.mimetype || "video/mp4",
-                "Content-Length": chunk.length,
-                "Content-Range": `bytes ${start}-${end - 1}/${videoSize}`
-            },
-            maxBodyLength: Infinity,
-            maxContentLength: Infinity,
-            timeout: 120000
-        });
+        const chunk =
+            file.buffer.subarray(
+                start,
+                end
+            );
 
-        uploadedBytes += chunk.length;
+        await axios.put(
+            uploadUrl,
+            chunk,
+            {
+                headers: {
+                    "Content-Type":
+                        file.mimetype ||
+                        "video/mp4",
+
+                    "Content-Length":
+                        chunk.length,
+
+                    "Content-Range":
+                        `bytes ${start}-${end - 1}/${videoSize}`
+                },
+
+                maxBodyLength:
+                    Infinity,
+
+                maxContentLength:
+                    Infinity,
+
+                timeout:
+                    120000
+            }
+        );
+
+        uploadedBytes +=
+            chunk.length;
     }
 
     return {
@@ -542,100 +815,95 @@ async function uploadVideoToTikTok(file, postOptions = {}, req) {
         videoSize,
         totalChunkCount,
         uploadedBytes,
-        status: "PROCESSING"
+
+        status:
+            "PROCESSING"
     };
 }
 
+/*
+|--------------------------------------------------------------------------
+| Publish status
+|--------------------------------------------------------------------------
+*/
 
-// ============================================================
-// GET VIDEO PUBLISH STATUS
-// ============================================================
+async function getPublishStatus(
+    publishId,
+    req
+) {
+    if (!publishId) {
+        throw new Error(
+            "publish_id is required."
+        );
+    }
 
-async function getPublishStatus(publishId, req) {
-    const accessToken = getStoredToken(req);
+    const accessToken =
+        getStoredToken(req);
 
     if (!accessToken) {
         throw new Error(
-            "No TikTok access token available. Complete OAuth first."
+            "TikTok is not connected."
         );
     }
 
-    if (!publishId) {
-        throw new Error(
-            "TikTok publish_id is required"
-        );
-    }
-
-
-    try {
-        const response = await axios.post(
-            "https://open.tiktokapis.com/v2/post/publish/status/fetch/",
+    const response =
+        await axios.post(
+            TIKTOK_STATUS_URL,
             {
-                publish_id: publishId,
+                publish_id:
+                    publishId
             },
             {
                 headers: {
-                    Authorization: `Bearer ${accessToken}`,
-                    "Content-Type": "application/json",
+                    Authorization:
+                        `Bearer ${accessToken}`,
+
+                    "Content-Type":
+                        "application/json"
                 },
+
+                timeout: 15000
             }
         );
 
-        return response.data;
-
-    } catch (error) {
-
-        console.error(
-            "TikTok Publish Status Error:",
-            error.response?.data || error.message
-        );
-
-        throw error;
-    }
+    return response.data;
 }
 
+/*
+|--------------------------------------------------------------------------
+| Logout / disconnect
+|--------------------------------------------------------------------------
+*/
 
-// ============================================================
-// GET TOKEN INFORMATION
-// ============================================================
+function logout(res) {
+    clearCookie(
+        res,
+        TOKEN_COOKIE
+    );
 
-function getTokenData() {
-    return {
-        accessToken: tokenStore.accessToken,
-        refreshToken: tokenStore.refreshToken,
-        expiresAt: tokenStore.expiresAt,
-        openId: tokenStore.openId,
-        scope: tokenStore.scope,
-    };
+    clearCookie(
+        res,
+        STATE_COOKIE
+    );
 }
-
-
-// ============================================================
-// CHECK WHETHER TOKEN EXISTS
-// ============================================================
-
-function isAuthenticated() {
-    return Boolean(tokenStore.accessToken);
-}
-
-
-// ============================================================
-// EXPORTS
-// ============================================================
 
 module.exports = {
-    getTikTokAuthUrl,
     getTikTokAuthRequest,
     exchangeCodeForToken,
+
     saveTokenCookie,
     saveStateCookie,
+
     validateRequestState,
-    getCreatorInfo,
-    initVideoPublish,
-    uploadVideoToTikTok,
-    getPublishStatus,
+
+    getSession,
     getStoredToken,
-    getTokenData,
-    isAuthenticated,
-    validateState,
+
+    getCreatorInfo,
+
+    uploadVideoToTikTok,
+
+    getPublishStatus,
+
+    logout
 };
