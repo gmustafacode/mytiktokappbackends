@@ -366,6 +366,95 @@ async function initVideoPublish(postPayload) {
     }
 }
 
+async function uploadVideoToTikTok(file, postOptions = {}) {
+    const accessToken = getStoredToken();
+
+    if (!accessToken) {
+        throw new Error("No TikTok access token available. Complete OAuth first.");
+    }
+
+    if (!file?.buffer?.length) {
+        throw new Error("A video file is required.");
+    }
+
+    const videoSize = file.buffer.length;
+    const maxChunkSize = 64 * 1024 * 1024;
+    const chunkSize = videoSize <= maxChunkSize
+        ? videoSize
+        : 10 * 1024 * 1024;
+    const totalChunkCount = Math.ceil(videoSize / chunkSize);
+
+    const initPayload = {
+        post_info: {
+            title: postOptions.title || "Posted from my app",
+            privacy_level: postOptions.privacyLevel || "SELF_ONLY",
+            disable_duet: postOptions.disableDuet === true,
+            disable_comment: postOptions.disableComment === true,
+            disable_stitch: postOptions.disableStitch === true
+        },
+        source_info: {
+            source: "FILE_UPLOAD",
+            video_size: videoSize,
+            chunk_size: chunkSize,
+            total_chunk_count: totalChunkCount
+        }
+    };
+
+    const initResponse = await axios.post(
+        "https://open.tiktokapis.com/v2/post/publish/video/init/",
+        initPayload,
+        {
+            headers: {
+                Authorization: `Bearer ${accessToken}`,
+                "Content-Type": "application/json; charset=UTF-8"
+            },
+            timeout: 30000
+        }
+    );
+
+    const initData = initResponse.data;
+    const publishId = initData?.data?.publish_id;
+    const uploadUrl = initData?.data?.upload_url;
+
+    if (initData?.error?.code && initData.error.code !== "ok") {
+        const error = new Error(initData.error.message || "TikTok upload initialization failed");
+        error.response = { data: initData, status: 400 };
+        throw error;
+    }
+
+    if (!publishId || !uploadUrl) {
+        throw new Error("TikTok did not return publish_id or upload_url.");
+    }
+
+    let uploadedBytes = 0;
+
+    for (let start = 0; start < videoSize; start += chunkSize) {
+        const end = Math.min(start + chunkSize, videoSize);
+        const chunk = file.buffer.subarray(start, end);
+
+        await axios.put(uploadUrl, chunk, {
+            headers: {
+                "Content-Type": file.mimetype || "video/mp4",
+                "Content-Length": chunk.length,
+                "Content-Range": `bytes ${start}-${end - 1}/${videoSize}`
+            },
+            maxBodyLength: Infinity,
+            maxContentLength: Infinity,
+            timeout: 120000
+        });
+
+        uploadedBytes += chunk.length;
+    }
+
+    return {
+        publishId,
+        videoSize,
+        totalChunkCount,
+        uploadedBytes,
+        status: "PROCESSING"
+    };
+}
+
 
 // ============================================================
 // GET VIDEO PUBLISH STATUS
@@ -448,6 +537,7 @@ module.exports = {
     exchangeCodeForToken,
     getCreatorInfo,
     initVideoPublish,
+    uploadVideoToTikTok,
     getPublishStatus,
     getStoredToken,
     getTokenData,

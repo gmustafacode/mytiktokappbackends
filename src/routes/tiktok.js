@@ -1,11 +1,10 @@
 const express = require('express');
 const multer = require('multer');
 const router = express.Router();
-const { uploadVideo } = require('../services/cloudinary');
 
 const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 4 * 1024 * 1024 * 1024 },
+    limits: { fileSize: 500 * 1024 * 1024 },
     fileFilter: (req, file, callback) => {
         if (!file.mimetype.startsWith('video/')) {
             callback(new Error('Only video files are allowed.'));
@@ -20,7 +19,7 @@ const {
     getTikTokAuthUrl,
     exchangeCodeForToken,
     getCreatorInfo,
-    initVideoPublish,
+    uploadVideoToTikTok,
     getPublishStatus,
     validateState
 } = require('../services/tiktok');
@@ -88,26 +87,21 @@ router.post('/tiktok/post', upload.single('video'), async (req, res) => {
     }
 
     try {
-        const cloudinaryVideo = await uploadVideo(req.file.buffer, req.file.originalname);
-        const payload = {
-            post_info: {
-                title: title || 'My TikTok video',
-                privacy_level: privacy_level || 'SELF_ONLY',
-                disable_duet: disable_duet === 'true',
-                disable_comment: disable_comment === 'true',
-                disable_stitch: disable_stitch === 'true'
-            },
-            source_info: {
-                source: 'PULL_FROM_URL',
-                video_url: cloudinaryVideo.secure_url
-            }
-        };
+        const response = await uploadVideoToTikTok(req.file, {
+            title,
+            privacyLevel: privacy_level,
+            disableDuet: disable_duet === 'true',
+            disableComment: disable_comment === 'true',
+            disableStitch: disable_stitch === 'true'
+        });
 
-        const response = await initVideoPublish(payload);
         return res.json({
-            message: 'TikTok publish initialized',
-            publish: response,
-            videoUrl: cloudinaryVideo.secure_url
+            message: 'Video uploaded to TikTok successfully',
+            publish_id: response.publishId,
+            video_size: response.videoSize,
+            total_chunks: response.totalChunkCount,
+            uploaded_bytes: response.uploadedBytes,
+            status: response.status
         });
     } catch (error) {
         console.error('TikTok init publish failed:', error.response?.data || error.message);
