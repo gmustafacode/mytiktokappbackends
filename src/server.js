@@ -2,11 +2,18 @@ require("dotenv").config();
 
 const express = require("express");
 const path = require("path");
-const tiktokRouter = require("./routes/tiktok");
+
+const tiktokRouter =
+    require("./routes/tiktok");
 
 const app = express();
 
-const PORT = process.env.PORT || 3000;
+const PORT =
+    process.env.PORT || 3000;
+
+// ======================================================
+// Environment validation
+// ======================================================
 
 const requiredEnv = [
     "TIKTOK_CLIENT_KEY",
@@ -15,24 +22,20 @@ const requiredEnv = [
     "SESSION_SECRET"
 ];
 
-const missingEnv = requiredEnv.filter(
-    (key) => !process.env[key]
-);
+const missingEnv =
+    requiredEnv.filter(
+        (key) => !process.env[key]
+    );
 
 if (missingEnv.length > 0) {
     console.error(
-        `Missing required environment variables: ${missingEnv.join(", ")}`
+        `Missing required env vars: ${missingEnv.join(", ")}`
     );
 }
 
-if (
-    process.env.SESSION_SECRET &&
-    process.env.SESSION_SECRET.length < 32
-) {
-    console.warn(
-        "WARNING: SESSION_SECRET should be at least 32 characters long."
-    );
-}
+// ======================================================
+// Middleware
+// ======================================================
 
 app.use(
     express.json({
@@ -46,54 +49,115 @@ app.use(
     })
 );
 
+// ======================================================
+// Static files
+// ======================================================
+
 app.use(
     express.static(
-        path.join(__dirname, "../public")
+        path.join(
+            __dirname,
+            "../public"
+        )
     )
 );
 
-app.use("/", tiktokRouter);
+// ======================================================
+// TikTok routes
+// ======================================================
 
-app.get("/", (req, res) => {
-    res.sendFile(
-        path.join(__dirname, "../public/index.html")
-    );
-});
+app.use(
+    "/",
+    tiktokRouter
+);
 
-app.get("/terms", (req, res) => {
-    res.sendFile(
-        path.join(__dirname, "../public/terms.html")
-    );
-});
+// ======================================================
+// Home
+// ======================================================
 
-app.get("/privacy", (req, res) => {
-    res.sendFile(
-        path.join(__dirname, "../public/privacy.html")
-    );
-});
+app.get(
+    "/",
+    (req, res) => {
+        res.sendFile(
+            path.join(
+                __dirname,
+                "../public/index.html"
+            )
+        );
+    }
+);
 
-app.get("/health", (req, res) => {
-    res.json({
-        success: true,
-        status: "ok",
-        message: "TikTok API server is healthy."
-    });
-});
+// ======================================================
+// Terms
+// ======================================================
+
+app.get(
+    "/terms",
+    (req, res) => {
+        res.sendFile(
+            path.join(
+                __dirname,
+                "../public/terms.html"
+            )
+        );
+    }
+);
+
+// ======================================================
+// Privacy
+// ======================================================
+
+app.get(
+    "/privacy",
+    (req, res) => {
+        res.sendFile(
+            path.join(
+                __dirname,
+                "../public/privacy.html"
+            )
+        );
+    }
+);
+
+// ======================================================
+// Health
+// ======================================================
+
+app.get(
+    "/health",
+    (req, res) => {
+        res.json({
+            status: "ok",
+
+            message:
+                "TikTok API server is healthy."
+        });
+    }
+);
+
+// ======================================================
+// Local server
+// ======================================================
 
 if (require.main === module) {
-    app.listen(PORT, () => {
-        console.log(
-            `TikTok server running on http://localhost:${PORT}`
-        );
 
-        console.log(
-            `Terms: ${process.env.APP_BASE_URL || `http://localhost:${PORT}`}/terms`
-        );
+    app.listen(
+        PORT,
+        () => {
 
-        console.log(
-            `Privacy: ${process.env.APP_BASE_URL || `http://localhost:${PORT}`}/privacy`
-        );
-    });
+            console.log(
+                `TikTok API server running on http://localhost:${PORT}`
+            );
+
+            console.log(
+                `Terms: ${process.env.TIKTOK_BASE_URL || "https://mytiktokappbackends.vercel.app"}/terms`
+            );
+
+            console.log(
+                `Privacy: ${process.env.TIKTOK_BASE_URL || "https://mytiktokappbackends.vercel.app"}/privacy`
+            );
+        }
+    );
 }
 
 module.exports = app;

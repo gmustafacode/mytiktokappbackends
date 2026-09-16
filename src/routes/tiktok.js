@@ -1,85 +1,77 @@
 const express = require("express");
 const multer = require("multer");
 
-const router =
-    express.Router();
+const router = express.Router();
 
-const upload =
-    multer({
-        storage:
-            multer.memoryStorage(),
+// ======================================================
+// Multer configuration
+// ======================================================
 
-        limits: {
-            fileSize:
-                500 * 1024 * 1024
-        },
+const upload = multer({
+    storage: multer.memoryStorage(),
 
-        fileFilter:
-            (req, file, callback) => {
-                if (
-                    !file.mimetype.startsWith(
-                        "video/"
-                    )
-                ) {
-                    return callback(
-                        new Error(
-                            "Only video files are allowed."
-                        )
-                    );
-                }
+    limits: {
+        fileSize: 500 * 1024 * 1024
+    },
 
-                callback(
-                    null,
-                    true
-                );
-            }
-    });
+    fileFilter: (
+        req,
+        file,
+        callback
+    ) => {
+        if (
+            !file.mimetype ||
+            !file.mimetype.startsWith("video/")
+        ) {
+            return callback(
+                new Error(
+                    "Only video files are allowed."
+                )
+            );
+        }
+
+        callback(null, true);
+    }
+});
+
+// ======================================================
+// TikTok service
+// ======================================================
 
 const {
     getTikTokAuthRequest,
     exchangeCodeForToken,
-
     saveTokenCookie,
     saveStateCookie,
-
-    validateRequestState,
-
-    getSession,
-    getStoredToken,
-
     getCreatorInfo,
-
     uploadVideoToTikTok,
-
     getPublishStatus,
-
-    logout
+    validateRequestState
 } = require("../services/tiktok");
 
-/*
-|--------------------------------------------------------------------------
-| Connect TikTok
-|--------------------------------------------------------------------------
-*/
+// ======================================================
+// TikTok OAuth
+// ======================================================
 
 router.get(
     "/auth/tiktok",
     (req, res) => {
         try {
-            const auth =
+            const authRequest =
                 getTikTokAuthRequest();
 
+            // Save OAuth state in cookie.
             saveStateCookie(
                 res,
-                auth.state
+                authRequest.state
             );
 
             return res.redirect(
-                auth.url
+                authRequest.url
             );
         } catch (error) {
             console.error(
-                "TikTok auth error:",
+                "TikTok OAuth start failed:",
                 error.message
             );
 
@@ -93,11 +85,9 @@ router.get(
     }
 );
 
-/*
-|--------------------------------------------------------------------------
-| OAuth callback
-|--------------------------------------------------------------------------
-*/
+// ======================================================
+// TikTok OAuth callback
+// ======================================================
 
 router.get(
     "/auth/tiktok/callback",
@@ -105,21 +95,21 @@ router.get(
         const {
             code,
             state,
-            error,
-            error_description
+            error
         } = req.query;
 
+        // TikTok returned an OAuth error.
         if (error) {
             return res.status(400).json({
                 error:
                     "TikTok authorization failed.",
 
                 detail:
-                    error_description ||
                     error
             });
         }
 
+        // Validate OAuth state.
         if (
             !state ||
             !validateRequestState(
@@ -129,45 +119,43 @@ router.get(
         ) {
             return res.status(400).json({
                 error:
-                    "Invalid OAuth state. Please restart TikTok login."
+                    "Invalid OAuth state. Please restart the TikTok login flow."
             });
         }
 
         if (!code) {
             return res.status(400).json({
                 error:
-                    "No authorization code received."
+                    "No authorization code received from TikTok."
             });
         }
 
         try {
-            const token =
+            const tokenData =
                 await exchangeCodeForToken(
                     code
                 );
 
+            // Save encrypted token in cookie.
             saveTokenCookie(
                 res,
-                token
+                tokenData
             );
 
             return res.json({
-                success: true,
-
                 message:
                     "TikTok OAuth successful.",
 
+                state,
+
                 open_id:
-                    token.open_id ||
-                    null,
+                    tokenData.open_id,
 
                 scope:
-                    token.scope ||
-                    null,
+                    tokenData.scope,
 
                 expires_in:
-                    token.expires_in ||
-                    null
+                    tokenData.expires_in
             });
         } catch (error) {
             console.error(
@@ -191,64 +179,23 @@ router.get(
     }
 );
 
-/*
-|--------------------------------------------------------------------------
-| Current connection
-|--------------------------------------------------------------------------
-*/
-
-router.get(
-    "/tiktok/me",
-    (req, res) => {
-        const session =
-            getSession(req);
-
-        if (!session?.accessToken) {
-            return res.json({
-                connected: false
-            });
-        }
-
-        return res.json({
-            connected: true,
-
-            open_id:
-                session.openId ||
-                null,
-
-            scope:
-                session.scope ||
-                null,
-
-            expires_at:
-                session.expiresAt ||
-                null
-        });
-    }
-);
-
-/*
-|--------------------------------------------------------------------------
-| Creator info
-|--------------------------------------------------------------------------
-*/
+// ======================================================
+// Creator information
+// ======================================================
 
 router.get(
     "/tiktok/creator",
     async (req, res) => {
         try {
-            const creator =
-                await getCreatorInfo(
-                    req
-                );
+            const creatorInfo =
+                await getCreatorInfo(req);
 
-            return res.json({
-                success: true,
-                data: creator
-            });
+            return res.json(
+                creatorInfo
+            );
         } catch (error) {
             console.error(
-                "Creator info error:",
+                "TikTok creator query failed:",
                 error.response?.data ||
                 error.message
             );
@@ -268,24 +215,14 @@ router.get(
     }
 );
 
-/*
-|--------------------------------------------------------------------------
-| Video Direct Post
-|--------------------------------------------------------------------------
-*/
+// ======================================================
+// Publish TikTok video
+// ======================================================
 
 router.post(
     "/tiktok/post",
     upload.single("video"),
-
     async (req, res) => {
-        if (!req.file) {
-            return res.status(400).json({
-                error:
-                    "Please select a video file."
-            });
-        }
-
         const {
             title,
             privacy_level,
@@ -294,16 +231,34 @@ router.post(
             disable_stitch
         } = req.body;
 
+        // Check uploaded file.
+        if (!req.file) {
+            return res.status(400).json({
+                error:
+                    "Please select a video file."
+            });
+        }
+
         try {
-            const result =
+            /*
+             * IMPORTANT:
+             *
+             * For your current unaudited TikTok
+             * Sandbox app, SELF_ONLY is used.
+             *
+             * Do not try to bypass TikTok's
+             * unaudited-client restriction.
+             */
+
+            const response =
                 await uploadVideoToTikTok(
                     req.file,
-
                     {
                         title,
 
                         privacyLevel:
-                            privacy_level,
+                            privacy_level ||
+                            "SELF_ONLY",
 
                         disableDuet:
                             disable_duet ===
@@ -317,7 +272,6 @@ router.post(
                             disable_stitch ===
                             "true"
                     },
-
                     req
                 );
 
@@ -328,23 +282,27 @@ router.post(
                     "Video uploaded to TikTok successfully.",
 
                 publish_id:
-                    result.publishId,
+                    response.publishId,
 
                 video_size:
-                    result.videoSize,
+                    response.videoSize,
 
                 total_chunks:
-                    result.totalChunkCount,
+                    response.totalChunkCount,
 
                 uploaded_bytes:
-                    result.uploadedBytes,
+                    response.uploadedBytes,
 
                 status:
-                    result.status
+                    response.status
             });
         } catch (error) {
             const tiktokError =
                 error.response?.data?.error;
+
+            // ==================================================
+            // TikTok unaudited client restriction
+            // ==================================================
 
             if (
                 tiktokError?.code ===
@@ -354,17 +312,39 @@ router.post(
                     success: false,
 
                     error:
-                        "TikTok sandbox currently allows posting only to private creator accounts.",
+                        "TikTok Sandbox requires a private creator account for this unaudited app.",
 
                     detail:
-                        "Set the authorized TikTok creator account to Private and authorize the account again.",
+                        "Keep the authorized TikTok account private and use SELF_ONLY until the app is approved for the required publishing capability.",
 
                     tiktok_code:
                         tiktokError.code,
 
                     log_id:
-                        tiktokError.log_id ||
-                        null
+                        tiktokError.log_id
+                });
+            }
+
+            // ==================================================
+            // Invalid parameters
+            // ==================================================
+
+            if (
+                tiktokError?.code ===
+                "invalid_params"
+            ) {
+                return res.status(
+                    error.response?.status ||
+                    400
+                ).json({
+                    success: false,
+
+                    error:
+                        "TikTok rejected the publishing parameters.",
+
+                    detail:
+                        error.response?.data ||
+                        error.message
                 });
             }
 
@@ -391,11 +371,9 @@ router.post(
     }
 );
 
-/*
-|--------------------------------------------------------------------------
-| Publish status
-|--------------------------------------------------------------------------
-*/
+// ======================================================
+// Publish status
+// ======================================================
 
 router.get(
     "/tiktok/status/:publishId",
@@ -404,20 +382,26 @@ router.get(
             publishId
         } = req.params;
 
+        if (!publishId) {
+            return res.status(400).json({
+                error:
+                    "publishId is required."
+            });
+        }
+
         try {
-            const result =
+            const statusResponse =
                 await getPublishStatus(
                     publishId,
                     req
                 );
 
-            return res.json({
-                success: true,
-                data: result
-            });
+            return res.json(
+                statusResponse
+            );
         } catch (error) {
             console.error(
-                "TikTok status error:",
+                "TikTok publish status failed:",
                 error.response?.data ||
                 error.message
             );
@@ -426,8 +410,6 @@ router.get(
                 error.response?.status ||
                 500
             ).json({
-                success: false,
-
                 error:
                     "Failed to fetch TikTok publish status.",
 
@@ -439,30 +421,9 @@ router.get(
     }
 );
 
-/*
-|--------------------------------------------------------------------------
-| Disconnect
-|--------------------------------------------------------------------------
-*/
-
-router.post(
-    "/auth/tiktok/logout",
-    (req, res) => {
-        logout(res);
-
-        return res.json({
-            success: true,
-            message:
-                "TikTok connection removed from this browser session."
-        });
-    }
-);
-
-/*
-|--------------------------------------------------------------------------
-| Multer / upload errors
-|--------------------------------------------------------------------------
-*/
+// ======================================================
+// Multer / upload errors
+// ======================================================
 
 router.use(
     (error, req, res, next) => {
@@ -471,6 +432,8 @@ router.use(
             multer.MulterError
         ) {
             return res.status(400).json({
+                success: false,
+
                 error:
                     `Upload failed: ${error.message}`
             });
@@ -478,12 +441,14 @@ router.use(
 
         if (error) {
             return res.status(400).json({
+                success: false,
+
                 error:
                     error.message
             });
         }
 
-        next();
+        return next();
     }
 );
 

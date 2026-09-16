@@ -9,336 +9,277 @@
         content="width=device-width, initial-scale=1.0"
     />
 
-    <title>CortexAI TikTok Test</title>
+    <title>CortexAI - TikTok Test</title>
 
     <style>
-        * {
-            box-sizing: border-box;
-        }
-
         body {
-            margin: 0;
             font-family: Arial, sans-serif;
-            background: #f5f5f5;
-            color: #111;
-        }
-
-        .container {
             max-width: 800px;
             margin: 40px auto;
             padding: 20px;
-        }
-
-        .card {
-            background: white;
-            border: 1px solid #ddd;
-            border-radius: 12px;
-            padding: 24px;
-            margin-bottom: 20px;
+            line-height: 1.6;
         }
 
         h1 {
-            margin-top: 0;
+            margin-bottom: 10px;
         }
 
-        h2 {
-            margin-top: 0;
+        .card {
+            border: 1px solid #ddd;
+            padding: 20px;
+            margin-top: 20px;
+            border-radius: 8px;
         }
 
         label {
             display: block;
-            font-weight: bold;
             margin-top: 15px;
-            margin-bottom: 6px;
+            font-weight: bold;
         }
 
         input,
         select {
             width: 100%;
-            padding: 11px;
-            border: 1px solid #ccc;
-            border-radius: 6px;
+            padding: 10px;
+            margin-top: 5px;
+            box-sizing: border-box;
         }
 
         button {
-            border: 0;
-            border-radius: 6px;
-            padding: 11px 18px;
+            margin-top: 20px;
+            padding: 12px 20px;
             cursor: pointer;
-            margin-top: 15px;
         }
 
-        .primary {
-            background: #111;
-            color: white;
-        }
-
-        .secondary {
-            background: #eee;
-            color: #111;
-        }
-
-        pre {
-            background: #111;
-            color: #eee;
+        .warning {
+            background: #fff3cd;
             padding: 15px;
-            border-radius: 8px;
-            overflow-x: auto;
-            white-space: pre-wrap;
-        }
-
-        .links {
+            border-radius: 6px;
             margin-top: 20px;
         }
 
-        .links a {
-            margin-right: 15px;
+        .result {
+            white-space: pre-wrap;
+            background: #f5f5f5;
+            padding: 15px;
+            margin-top: 20px;
+            border-radius: 6px;
         }
     </style>
 </head>
 
 <body>
 
-    <div class="container">
+    <h1>CortexAI TikTok Test</h1>
 
-        <div class="card">
+    <p>
+        This page is only for testing the TikTok backend integration.
+    </p>
 
-            <h1>CortexAI TikTok Test</h1>
+    <!-- ============================================= -->
+    <!-- OAuth -->
+    <!-- ============================================= -->
 
-            <p>
-                This is a testing prototype for TikTok OAuth
-                and content publishing.
-            </p>
+    <div class="card">
 
-            <a href="/auth/tiktok">
-                <button class="primary">
-                    Connect TikTok
-                </button>
-            </a>
+        <h2>1. Connect TikTok</h2>
 
-            <button
-                class="secondary"
-                onclick="checkConnection()"
-            >
-                Check Connection
+        <p>
+            First connect your TikTok account.
+        </p>
+
+        <a href="/auth/tiktok">
+            <button type="button">
+                Connect TikTok
             </button>
+        </a>
 
-            <button
-                class="secondary"
-                onclick="getCreator()"
-            >
-                Get Creator Info
-            </button>
+    </div>
 
-            <button
-                class="secondary"
-                onclick="disconnectTikTok()"
-            >
-                Disconnect
-            </button>
+    <!-- ============================================= -->
+    <!-- Creator -->
+    <!-- ============================================= -->
+
+    <div class="card">
+
+        <h2>2. Creator Information</h2>
+
+        <button
+            type="button"
+            onclick="getCreatorInfo()"
+        >
+            Get Creator Info
+        </button>
+
+    </div>
+
+    <!-- ============================================= -->
+    <!-- Publish -->
+    <!-- ============================================= -->
+
+    <div class="card">
+
+        <h2>3. Publish Video</h2>
+
+        <div class="warning">
+
+            Current TikTok Sandbox / unaudited app:
+
+            <strong>
+                SELF_ONLY + private TikTok account
+            </strong>
+
+            is required for this test.
 
         </div>
 
+        <form
+            id="publishForm"
+        >
 
-        <div class="card">
-
-            <h2>Publish Video</h2>
-
-            <form
-                id="publishForm"
-                enctype="multipart/form-data"
-            >
-
-                <label for="video">
-                    Video
-                </label>
-
-                <input
-                    id="video"
-                    name="video"
-                    type="file"
-                    accept="video/mp4,video/quicktime,video/webm"
-                    required
-                />
-
-
-                <label for="title">
-                    Title
-                </label>
-
-                <input
-                    id="title"
-                    name="title"
-                    type="text"
-                    value="My CortexAI TikTok video"
-                />
-
-
-                <label for="privacy_level">
-                    Privacy
-                </label>
-
-                <select
-                    id="privacy_level"
-                    name="privacy_level"
-                >
-
-                    <option value="SELF_ONLY">
-                        SELF_ONLY
-                    </option>
-
-                    <option value="PUBLIC_TO_EVERYONE">
-                        PUBLIC_TO_EVERYONE
-                    </option>
-
-                    <option value="MUTUAL_FOLLOW_FRIENDS">
-                        MUTUAL_FOLLOW_FRIENDS
-                    </option>
-
-                </select>
-
-
-                <label>
-                    <input
-                        type="checkbox"
-                        name="disable_duet"
-                        value="true"
-                    />
-
-                    Disable Duet
-                </label>
-
-
-                <label>
-                    <input
-                        type="checkbox"
-                        name="disable_comment"
-                        value="true"
-                    />
-
-                    Disable Comments
-                </label>
-
-
-                <label>
-                    <input
-                        type="checkbox"
-                        name="disable_stitch"
-                        value="true"
-                    />
-
-                    Disable Stitch
-                </label>
-
-
-                <button
-                    class="primary"
-                    type="submit"
-                >
-                    Publish Video
-                </button>
-
-            </form>
-
-        </div>
-
-
-        <div class="card">
-
-            <h2>Publish Status</h2>
+            <label>
+                Video file
+            </label>
 
             <input
-                id="publishId"
-                type="text"
-                placeholder="Paste publish_id here"
+                type="file"
+                name="video"
+                accept="video/mp4,video/quicktime,video/webm"
+                required
             />
 
-            <button
-                class="secondary"
-                onclick="checkStatus()"
+            <label>
+                Title
+            </label>
+
+            <input
+                type="text"
+                name="title"
+                value="My CortexAI TikTok Test"
+            />
+
+            <label>
+                Privacy
+            </label>
+
+            <select
+                name="privacy_level"
             >
-                Check Status
+                <option value="SELF_ONLY">
+                    SELF_ONLY
+                </option>
+
+                <option value="PUBLIC_TO_EVERYONE">
+                    PUBLIC_TO_EVERYONE
+                </option>
+
+                <option value="MUTUAL_FOLLOW_FRIENDS">
+                    MUTUAL_FOLLOW_FRIENDS
+                </option>
+            </select>
+
+            <label>
+                Disable Duet
+            </label>
+
+            <select
+                name="disable_duet"
+            >
+                <option value="false">
+                    No
+                </option>
+
+                <option value="true">
+                    Yes
+                </option>
+            </select>
+
+            <label>
+                Disable Comment
+            </label>
+
+            <select
+                name="disable_comment"
+            >
+                <option value="false">
+                    No
+                </option>
+
+                <option value="true">
+                    Yes
+                </option>
+            </select>
+
+            <label>
+                Disable Stitch
+            </label>
+
+            <select
+                name="disable_stitch"
+            >
+                <option value="false">
+                    No
+                </option>
+
+                <option value="true">
+                    Yes
+                </option>
+            </select>
+
+            <button
+                type="submit"
+            >
+                Publish Video
             </button>
 
-        </div>
+        </form>
 
+    </div>
 
-        <div class="card">
+    <!-- ============================================= -->
+    <!-- Result -->
+    <!-- ============================================= -->
 
-            <h2>Response</h2>
+    <div class="card">
 
-            <pre id="result">
-Waiting...
-            </pre>
+        <h2>Result</h2>
 
-        </div>
-
-
-        <div class="card">
-
-            <div class="links">
-
-                <a href="/terms">
-                    Terms of Service
-                </a>
-
-                <a href="/privacy">
-                    Privacy Policy
-                </a>
-
-            </div>
-
+        <div
+            id="result"
+            class="result"
+        >
+            No request yet.
         </div>
 
     </div>
 
-
     <script>
 
-        const result =
-            document.getElementById("result");
+        // ==================================================
+        // Result helper
+        // ==================================================
 
-
-        function show(data) {
-
-            result.textContent =
-                typeof data === "string"
-                    ? data
-                    : JSON.stringify(
-                        data,
-                        null,
-                        2
-                    );
+        function showResult(data) {
+            document.getElementById(
+                "result"
+            ).textContent =
+                JSON.stringify(
+                    data,
+                    null,
+                    2
+                );
         }
 
+        // ==================================================
+        // Creator Info
+        // ==================================================
 
-        async function checkConnection() {
+        async function getCreatorInfo() {
 
-            try {
-
-                const response =
-                    await fetch(
-                        "/tiktok/me"
-                    );
-
-                const data =
-                    await response.json();
-
-                show(data);
-
-            } catch (error) {
-
-                show({
-                    error:
-                        error.message
-                });
-
-            }
-
-        }
-
-
-        async function getCreator() {
+            showResult({
+                loading:
+                    true
+            });
 
             try {
 
@@ -350,48 +291,23 @@ Waiting...
                 const data =
                     await response.json();
 
-                show(data);
+                showResult(data);
 
             } catch (error) {
 
-                show({
+                showResult({
+                    success: false,
+
                     error:
                         error.message
                 });
 
             }
-
         }
 
-
-        async function disconnectTikTok() {
-
-            try {
-
-                const response =
-                    await fetch(
-                        "/auth/tiktok/logout",
-                        {
-                            method: "POST"
-                        }
-                    );
-
-                const data =
-                    await response.json();
-
-                show(data);
-
-            } catch (error) {
-
-                show({
-                    error:
-                        error.message
-                });
-
-            }
-
-        }
-
+        // ==================================================
+        // Publish Video
+        // ==================================================
 
         document
             .getElementById("publishForm")
@@ -407,9 +323,13 @@ Waiting...
                     const formData =
                         new FormData(form);
 
-                    show(
-                        "Uploading video..."
-                    );
+                    showResult({
+                        loading:
+                            true,
+
+                        message:
+                            "Uploading video to TikTok..."
+                    });
 
                     try {
 
@@ -417,7 +337,9 @@ Waiting...
                             await fetch(
                                 "/tiktok/post",
                                 {
-                                    method: "POST",
+                                    method:
+                                        "POST",
+
                                     body:
                                         formData
                                 }
@@ -426,77 +348,20 @@ Waiting...
                         const data =
                             await response.json();
 
-                        show(data);
-
-                        if (
-                            data.publish_id
-                        ) {
-
-                            document
-                                .getElementById(
-                                    "publishId"
-                                )
-                                .value =
-                                data.publish_id;
-                        }
+                        showResult(data);
 
                     } catch (error) {
 
-                        show({
+                        showResult({
+                            success: false,
+
                             error:
                                 error.message
                         });
 
                     }
-
                 }
             );
-
-
-        async function checkStatus() {
-
-            const publishId =
-                document
-                    .getElementById(
-                        "publishId"
-                    )
-                    .value
-                    .trim();
-
-            if (!publishId) {
-
-                show({
-                    error:
-                        "Please enter publish_id."
-                });
-
-                return;
-            }
-
-            try {
-
-                const response =
-                    await fetch(
-                        `/tiktok/status/${encodeURIComponent(
-                            publishId
-                        )}`
-                    );
-
-                const data =
-                    await response.json();
-
-                show(data);
-
-            } catch (error) {
-
-                show({
-                    error:
-                        error.message
-                });
-
-            }
-
-        }
 
     </script>
 

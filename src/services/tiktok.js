@@ -1,12 +1,15 @@
 const axios = require("axios");
-
 const {
     randomUUID,
-    randomBytes,
     createCipheriv,
     createDecipheriv,
-    createHash
+    createHash,
+    randomBytes
 } = require("crypto");
+
+// ======================================================
+// TikTok API URLs
+// ======================================================
 
 const TIKTOK_AUTHORIZE_URL =
     "https://www.tiktok.com/v2/auth/authorize/";
@@ -23,37 +26,49 @@ const TIKTOK_VIDEO_INIT_URL =
 const TIKTOK_STATUS_URL =
     "https://open.tiktokapis.com/v2/post/publish/status/fetch/";
 
-const TOKEN_COOKIE = "tiktok_session";
-const STATE_COOKIE = "tiktok_oauth_state";
+// ======================================================
+// Default settings
+// ======================================================
 
-/*
-|--------------------------------------------------------------------------
-| Testing configuration
-|--------------------------------------------------------------------------
-|
-| Unaudited TikTok applications can be restricted to private accounts.
-|
-| Keep SELF_ONLY while testing.
-|
-| After TikTok approves the required product/scopes,
-| this can be changed according to the approved configuration.
-|
-*/
+// IMPORTANT:
+// For an unaudited TikTok app in Sandbox,
+// SELF_ONLY/private-account posting is required.
+const DEFAULT_PRIVACY_LEVEL = "SELF_ONLY";
 
-const DEFAULT_PRIVACY_LEVEL =
-    process.env.TIKTOK_PRIVACY_LEVEL || "SELF_ONLY";
+// TikTok recommends keeping individual chunks
+// within the allowed upload size.
+const MAX_CHUNK_SIZE = 64 * 1024 * 1024;
 
-/*
-|--------------------------------------------------------------------------
-| Encryption key
-|--------------------------------------------------------------------------
-*/
+// ======================================================
+// Temporary in-memory token store
+// ======================================================
 
-function getEncryptionKey() {
+// This is okay for your current prototype/testing.
+// DO NOT use this as the final SaaS architecture.
+const tokenStore = {
+    accessToken: null,
+    refreshToken: null,
+    expiresAt: null,
+    openId: null,
+    scope: null
+};
+
+// ======================================================
+// OAuth state
+// ======================================================
+
+const stateStore = new Set();
+
+const tokenCookieName = "tiktok_session";
+const stateCookieName = "tiktok_oauth_state";
+
+// ======================================================
+// Encryption
+// ======================================================
+
+function getSessionKey() {
     if (!process.env.SESSION_SECRET) {
-        throw new Error(
-            "SESSION_SECRET is missing."
-        );
+        throw new Error("SESSION_SECRET is missing in environment variables.");
     }
 
     return createHash("sha256")
@@ -61,26 +76,18 @@ function getEncryptionKey() {
         .digest();
 }
 
-/*
-|--------------------------------------------------------------------------
-| Encrypt
-|--------------------------------------------------------------------------
-*/
-
-function encrypt(data) {
-    const key = getEncryptionKey();
-
+function encrypt(value) {
     const iv = randomBytes(12);
 
     const cipher = createCipheriv(
         "aes-256-gcm",
-        key,
+        getSessionKey(),
         iv
     );
 
     const encrypted = Buffer.concat([
         cipher.update(
-            JSON.stringify(data),
+            JSON.stringify(value),
             "utf8"
         ),
         cipher.final()
@@ -95,48 +102,24 @@ function encrypt(data) {
     ].join(".");
 }
 
-/*
-|--------------------------------------------------------------------------
-| Decrypt
-|--------------------------------------------------------------------------
-*/
-
 function decrypt(value) {
     try {
-        if (!value) {
+        const parts = value.split(".");
+
+        if (parts.length !== 3) {
             return null;
         }
 
-        const [
-            ivText,
-            authTagText,
-            encryptedText
-        ] = value.split(".");
-
-        if (
-            !ivText ||
-            !authTagText ||
-            !encryptedText
-        ) {
-            return null;
-        }
-
-        const key = getEncryptionKey();
+        const [ivText, tagText, encryptedText] = parts;
 
         const decipher = createDecipheriv(
             "aes-256-gcm",
-            key,
-            Buffer.from(
-                ivText,
-                "base64url"
-            )
+            getSessionKey(),
+            Buffer.from(ivText, "base64url")
         );
 
         decipher.setAuthTag(
-            Buffer.from(
-                authTagText,
-                "base64url"
-            )
+            Buffer.from(tagText, "base64url")
         );
 
         const decrypted = Buffer.concat([
@@ -157,15 +140,12 @@ function decrypt(value) {
     }
 }
 
-/*
-|--------------------------------------------------------------------------
-| Cookie parser
-|--------------------------------------------------------------------------
-*/
+// ======================================================
+// Cookie helpers
+// ======================================================
 
 function parseCookies(req) {
-    const cookieHeader =
-        req.headers.cookie || "";
+    const cookieHeader = req.headers.cookie || "";
 
     if (!cookieHeader) {
         return {};
@@ -180,51 +160,37 @@ function parseCookies(req) {
             continue;
         }
 
-        const name =
-            part
-                .slice(0, index)
-                .trim();
+        const name = part
+            .slice(0, index)
+            .trim();
 
-        const value =
-            part
-                .slice(index + 1)
-                .trim();
+        const value = part
+            .slice(index + 1)
+            .trim();
 
-        try {
-            cookies[name] =
-                decodeURIComponent(value);
-        } catch {
-            cookies[name] = value;
-        }
+        cookies[name] = decodeURIComponent(value);
     }
 
     return cookies;
 }
 
-/*
-|--------------------------------------------------------------------------
-| Set cookie
-|--------------------------------------------------------------------------
-*/
-
-function setCookie(
+function appendCookie(
     res,
     name,
     value,
     maxAge
 ) {
-    const secure =
-        process.env.NODE_ENV === "production"
-            ? "; Secure"
-            : "";
-
     const cookie =
-        `${name}=${encodeURIComponent(value)}` +
-        `; Max-Age=${maxAge}` +
-        `; Path=/` +
-        `; HttpOnly` +
-        `; SameSite=Lax` +
-        secure;
+        `${name}=${encodeURIComponent(value)}; ` +
+        `Max-Age=${maxAge}; ` +
+        `Path=/; ` +
+        `HttpOnly; ` +
+        `SameSite=Lax` +
+        (
+            process.env.NODE_ENV === "production"
+                ? "; Secure"
+                : ""
+        );
 
     const existing =
         res.getHeader("Set-Cookie");
@@ -232,9 +198,7 @@ function setCookie(
     if (existing) {
         res.setHeader(
             "Set-Cookie",
-            Array.isArray(existing)
-                ? [...existing, cookie]
-                : [existing, cookie]
+            [].concat(existing, cookie)
         );
     } else {
         res.setHeader(
@@ -244,156 +208,206 @@ function setCookie(
     }
 }
 
-/*
-|--------------------------------------------------------------------------
-| Clear cookie
-|--------------------------------------------------------------------------
-*/
+// ======================================================
+// Token cookie
+// ======================================================
 
-function clearCookie(res, name) {
-    setCookie(
+function saveTokenCookie(
+    res,
+    payload
+) {
+    const session = {
+        accessToken:
+            payload.access_token,
+
+        refreshToken:
+            payload.refresh_token || null,
+
+        expiresAt:
+            payload.expires_in
+                ? Date.now() +
+                Number(payload.expires_in) *
+                1000
+                : null,
+
+        openId:
+            payload.open_id || null,
+
+        scope:
+            payload.scope || null
+    };
+
+    appendCookie(
         res,
-        name,
-        "",
-        0
+        tokenCookieName,
+        encrypt(session),
+        30 * 24 * 60 * 60
     );
+
+    // Also keep it in memory for prototype testing.
+    setTokenData(payload);
 }
 
-/*
-|--------------------------------------------------------------------------
-| Save OAuth state
-|--------------------------------------------------------------------------
-*/
+// ======================================================
+// OAuth state cookie
+// ======================================================
 
 function saveStateCookie(
     res,
     state
 ) {
-    setCookie(
+    appendCookie(
         res,
-        STATE_COOKIE,
-        encrypt({
-            state,
-            createdAt: Date.now()
-        }),
+        stateCookieName,
+        encrypt({ state }),
         10 * 60
     );
 }
 
-/*
-|--------------------------------------------------------------------------
-| Save TikTok session
-|--------------------------------------------------------------------------
-*/
+function getTokenFromRequest(req) {
+    const cookies = parseCookies(req);
 
-function saveTokenCookie(
-    res,
-    token
-) {
-    const expiresAt =
-        token.expires_in
-            ? Date.now() +
-              Number(token.expires_in) * 1000
-            : null;
-
-    const session = {
-        accessToken:
-            token.access_token,
-
-        refreshToken:
-            token.refresh_token || null,
-
-        expiresAt,
-
-        openId:
-            token.open_id || null,
-
-        scope:
-            token.scope || null
-    };
-
-    setCookie(
-        res,
-        TOKEN_COOKIE,
-        encrypt(session),
-        30 * 24 * 60 * 60
-    );
-}
-
-/*
-|--------------------------------------------------------------------------
-| Read TikTok session
-|--------------------------------------------------------------------------
-*/
-
-function getSession(req) {
-    const cookies =
-        parseCookies(req);
-
-    if (!cookies[TOKEN_COOKIE]) {
-        return null;
-    }
-
-    return decrypt(
-        cookies[TOKEN_COOKIE]
-    );
-}
-
-/*
-|--------------------------------------------------------------------------
-| Access token
-|--------------------------------------------------------------------------
-*/
-
-function getStoredToken(req) {
     const session =
-        getSession(req);
+        cookies[tokenCookieName]
+            ? decrypt(
+                cookies[tokenCookieName]
+            )
+            : null;
 
     return (
         session?.accessToken ||
+        tokenStore.accessToken ||
         null
     );
 }
 
-/*
-|--------------------------------------------------------------------------
-| OAuth state validation
-|--------------------------------------------------------------------------
-*/
+function getStateFromRequest(req) {
+    const cookies = parseCookies(req);
+
+    const saved =
+        cookies[stateCookieName]
+            ? decrypt(
+                cookies[stateCookieName]
+            )
+            : null;
+
+    return saved?.state || null;
+}
+
+// ======================================================
+// Token store
+// ======================================================
+
+function setTokenData(payload = {}) {
+    if (!payload.access_token) {
+        return;
+    }
+
+    tokenStore.accessToken =
+        payload.access_token;
+
+    tokenStore.refreshToken =
+        payload.refresh_token || null;
+
+    tokenStore.expiresAt =
+        payload.expires_in
+            ? Date.now() +
+            Number(payload.expires_in) *
+            1000
+            : null;
+
+    tokenStore.openId =
+        payload.open_id || null;
+
+    tokenStore.scope =
+        payload.scope || null;
+}
+
+function getStoredToken(req) {
+    if (req) {
+        return getTokenFromRequest(req);
+    }
+
+    return tokenStore.accessToken;
+}
+
+function getTokenData(req) {
+    if (req) {
+        const cookies = parseCookies(req);
+
+        const session =
+            cookies[tokenCookieName]
+                ? decrypt(
+                    cookies[tokenCookieName]
+                )
+                : null;
+
+        if (session) {
+            return session;
+        }
+    }
+
+    return {
+        accessToken:
+            tokenStore.accessToken,
+
+        refreshToken:
+            tokenStore.refreshToken,
+
+        expiresAt:
+            tokenStore.expiresAt,
+
+        openId:
+            tokenStore.openId,
+
+        scope:
+            tokenStore.scope
+    };
+}
+
+function isAuthenticated(req) {
+    return Boolean(
+        getStoredToken(req)
+    );
+}
+
+// ======================================================
+// OAuth State
+// ======================================================
+
+function createAndStoreState() {
+    const state = randomUUID();
+
+    stateStore.add(state);
+
+    return state;
+}
+
+function validateState(state) {
+    const isValid =
+        typeof state === "string" &&
+        stateStore.has(state);
+
+    if (isValid) {
+        stateStore.delete(state);
+    }
+
+    return isValid;
+}
 
 function validateRequestState(
     req,
     state
 ) {
-    if (!state) {
-        return false;
-    }
-
-    const cookies =
-        parseCookies(req);
-
-    const saved =
-        cookies[STATE_COOKIE]
-            ? decrypt(
-                cookies[STATE_COOKIE]
-            )
-            : null;
-
-    if (!saved?.state) {
-        return false;
-    }
-
-    const valid =
-        saved.state === state;
-
-    return valid;
+    return (
+        validateState(state) ||
+        getStateFromRequest(req) === state
+    );
 }
 
-/*
-|--------------------------------------------------------------------------
-| Authorization URL
-|--------------------------------------------------------------------------
-*/
+// ======================================================
+// TikTok OAuth URL
+// ======================================================
 
 function getTikTokAuthRequest() {
     const clientKey =
@@ -415,15 +429,16 @@ function getTikTokAuthRequest() {
     }
 
     const state =
-        randomUUID();
+        createAndStoreState();
 
     const params =
         new URLSearchParams({
             client_key: clientKey,
+
             response_type: "code",
 
             scope:
-                "user.info.basic,video.publish,video.upload",
+                "user.info.basic,video.publish",
 
             redirect_uri:
                 redirectUri,
@@ -431,53 +446,29 @@ function getTikTokAuthRequest() {
             state
         });
 
+    const url =
+        `${TIKTOK_AUTHORIZE_URL}?${params.toString()}`;
+
     return {
         state,
-
-        url:
-            `${TIKTOK_AUTHORIZE_URL}?${params.toString()}`
+        url
     };
 }
 
-/*
-|--------------------------------------------------------------------------
-| Exchange code
-|--------------------------------------------------------------------------
-*/
+function getTikTokAuthUrl() {
+    return getTikTokAuthRequest().url;
+}
+
+// ======================================================
+// Exchange authorization code for token
+// ======================================================
 
 async function exchangeCodeForToken(
     code
 ) {
     if (!code) {
         throw new Error(
-            "Authorization code is missing."
-        );
-    }
-
-    const clientKey =
-        process.env.TIKTOK_CLIENT_KEY;
-
-    const clientSecret =
-        process.env.TIKTOK_CLIENT_SECRET;
-
-    const redirectUri =
-        process.env.TIKTOK_REDIRECT_URI;
-
-    if (!clientKey) {
-        throw new Error(
-            "TIKTOK_CLIENT_KEY is missing."
-        );
-    }
-
-    if (!clientSecret) {
-        throw new Error(
-            "TIKTOK_CLIENT_SECRET is missing."
-        );
-    }
-
-    if (!redirectUri) {
-        throw new Error(
-            "TIKTOK_REDIRECT_URI is missing."
+            "TikTok authorization code is missing."
         );
     }
 
@@ -486,12 +477,12 @@ async function exchangeCodeForToken(
 
     params.append(
         "client_key",
-        clientKey
+        process.env.TIKTOK_CLIENT_KEY
     );
 
     params.append(
         "client_secret",
-        clientSecret
+        process.env.TIKTOK_CLIENT_SECRET
     );
 
     params.append(
@@ -506,7 +497,7 @@ async function exchangeCodeForToken(
 
     params.append(
         "redirect_uri",
-        redirectUri
+        process.env.TIKTOK_REDIRECT_URI
     );
 
     const response =
@@ -519,44 +510,20 @@ async function exchangeCodeForToken(
                         "application/x-www-form-urlencoded"
                 },
 
-                timeout: 15000
+                timeout: 30000
             }
         );
 
-    const data =
-        response.data;
+    setTokenData(
+        response.data
+    );
 
-    if (data?.error) {
-        const error =
-            new Error(
-                data.error_description ||
-                data.error ||
-                "TikTok token exchange failed."
-            );
-
-        error.response = {
-            data,
-            status:
-                response.status
-        };
-
-        throw error;
-    }
-
-    if (!data?.access_token) {
-        throw new Error(
-            "TikTok did not return an access token."
-        );
-    }
-
-    return data;
+    return response.data;
 }
 
-/*
-|--------------------------------------------------------------------------
-| Creator information
-|--------------------------------------------------------------------------
-*/
+// ======================================================
+// Creator Information
+// ======================================================
 
 async function getCreatorInfo(req) {
     const accessToken =
@@ -564,7 +531,7 @@ async function getCreatorInfo(req) {
 
     if (!accessToken) {
         throw new Error(
-            "TikTok is not connected."
+            "No TikTok access token available. Complete OAuth first."
         );
     }
 
@@ -578,21 +545,19 @@ async function getCreatorInfo(req) {
                         `Bearer ${accessToken}`,
 
                     "Content-Type":
-                        "application/json"
+                        "application/json; charset=UTF-8"
                 },
 
-                timeout: 15000
+                timeout: 30000
             }
         );
 
     return response.data;
 }
 
-/*
-|--------------------------------------------------------------------------
-| Initialize FILE_UPLOAD Direct Post
-|--------------------------------------------------------------------------
-*/
+// ======================================================
+// Initialize TikTok File Upload
+// ======================================================
 
 async function initializeFileUpload(
     req,
@@ -601,7 +566,10 @@ async function initializeFileUpload(
         privacyLevel,
         disableDuet,
         disableComment,
-        disableStitch
+        disableStitch,
+        videoSize,
+        chunkSize,
+        totalChunkCount
     }
 ) {
     const accessToken =
@@ -609,7 +577,25 @@ async function initializeFileUpload(
 
     if (!accessToken) {
         throw new Error(
-            "TikTok is not connected."
+            "TikTok is not connected. Complete OAuth first."
+        );
+    }
+
+    if (!videoSize) {
+        throw new Error(
+            "Video size is missing."
+        );
+    }
+
+    if (!chunkSize) {
+        throw new Error(
+            "Chunk size is missing."
+        );
+    }
+
+    if (!totalChunkCount) {
+        throw new Error(
+            "Total chunk count is missing."
         );
     }
 
@@ -619,6 +605,7 @@ async function initializeFileUpload(
                 title ||
                 "Posted from CortexAI",
 
+            // For your current unaudited Sandbox.
             privacy_level:
                 privacyLevel ||
                 DEFAULT_PRIVACY_LEVEL,
@@ -634,10 +621,27 @@ async function initializeFileUpload(
         },
 
         source_info: {
-            source:
-                "FILE_UPLOAD"
+            source: "FILE_UPLOAD",
+
+            video_size:
+                videoSize,
+
+            chunk_size:
+                chunkSize,
+
+            total_chunk_count:
+                totalChunkCount
         }
     };
+
+    console.log(
+        "TikTok publish initialization:",
+        JSON.stringify(
+            payload,
+            null,
+            2
+        )
+    );
 
     return axios.post(
         TIKTOK_VIDEO_INIT_URL,
@@ -648,7 +652,7 @@ async function initializeFileUpload(
                     `Bearer ${accessToken}`,
 
                 "Content-Type":
-                    "application/json"
+                    "application/json; charset=UTF-8"
             },
 
             timeout: 30000
@@ -656,70 +660,102 @@ async function initializeFileUpload(
     );
 }
 
-/*
-|--------------------------------------------------------------------------
-| Upload video
-|--------------------------------------------------------------------------
-*/
+// ======================================================
+// Upload Video
+// ======================================================
 
 async function uploadVideoToTikTok(
     file,
-    options,
+    postOptions = {},
     req
 ) {
+    const accessToken =
+        getStoredToken(req);
+
+    if (!accessToken) {
+        throw new Error(
+            "No TikTok access token available. Complete OAuth first."
+        );
+    }
+
     if (!file?.buffer?.length) {
         throw new Error(
-            "Video file is required."
+            "A video file is required."
         );
     }
 
     const videoSize =
         file.buffer.length;
 
-    const MAX_CHUNK_SIZE =
-        64 * 1024 * 1024;
-
-    let chunkSize;
-
-    if (
+    // TikTok allows chunks up to 64 MB.
+    // For bigger videos we use 10 MB chunks.
+    const chunkSize =
         videoSize <= MAX_CHUNK_SIZE
-    ) {
-        chunkSize =
-            videoSize;
-    } else {
-        chunkSize =
-            10 * 1024 * 1024;
-    }
+            ? videoSize
+            : 10 * 1024 * 1024;
 
     const totalChunkCount =
         Math.ceil(
-            videoSize /
-            chunkSize
+            videoSize / chunkSize
         );
+
+    console.log(
+        "TikTok upload information:",
+        {
+            videoSize,
+            chunkSize,
+            totalChunkCount,
+            mimeType: file.mimetype
+        }
+    );
+
+    // ==================================================
+    // Step 1: Initialize upload
+    // ==================================================
 
     const initResponse =
         await initializeFileUpload(
             req,
             {
                 title:
-                    options.title,
+                    postOptions.title,
 
+                // IMPORTANT:
+                // For current unaudited sandbox,
+                // SELF_ONLY is required.
                 privacyLevel:
-                    options.privacyLevel,
+                    postOptions.privacyLevel ||
+                    DEFAULT_PRIVACY_LEVEL,
 
                 disableDuet:
-                    options.disableDuet,
+                    postOptions.disableDuet,
 
                 disableComment:
-                    options.disableComment,
+                    postOptions.disableComment,
 
                 disableStitch:
-                    options.disableStitch
+                    postOptions.disableStitch,
+
+                // REQUIRED by TikTok
+                videoSize,
+
+                chunkSize,
+
+                totalChunkCount
             }
         );
 
     const initData =
         initResponse.data;
+
+    console.log(
+        "TikTok init response:",
+        JSON.stringify(
+            initData,
+            null,
+            2
+        )
+    );
 
     if (
         initData?.error?.code &&
@@ -728,12 +764,11 @@ async function uploadVideoToTikTok(
         const error =
             new Error(
                 initData.error.message ||
-                "TikTok initialization failed."
+                "TikTok upload initialization failed."
             );
 
         error.response = {
             data: initData,
-
             status:
                 initResponse.status ||
                 400
@@ -760,6 +795,10 @@ async function uploadVideoToTikTok(
         );
     }
 
+    // ==================================================
+    // Step 2: Upload video chunks
+    // ==================================================
+
     let uploadedBytes = 0;
 
     for (
@@ -778,6 +817,10 @@ async function uploadVideoToTikTok(
                 start,
                 end
             );
+
+        console.log(
+            `Uploading chunk: ${start}-${end - 1}/${videoSize}`
+        );
 
         await axios.put(
             uploadUrl,
@@ -810,39 +853,43 @@ async function uploadVideoToTikTok(
             chunk.length;
     }
 
+    // ==================================================
+    // Step 3: Return publish information
+    // ==================================================
+
     return {
         publishId,
+
         videoSize,
+
         totalChunkCount,
+
         uploadedBytes,
 
-        status:
-            "PROCESSING"
+        status: "PROCESSING"
     };
 }
 
-/*
-|--------------------------------------------------------------------------
-| Publish status
-|--------------------------------------------------------------------------
-*/
+// ======================================================
+// Publish Status
+// ======================================================
 
 async function getPublishStatus(
     publishId,
     req
 ) {
-    if (!publishId) {
-        throw new Error(
-            "publish_id is required."
-        );
-    }
-
     const accessToken =
         getStoredToken(req);
 
     if (!accessToken) {
         throw new Error(
-            "TikTok is not connected."
+            "No TikTok access token available."
+        );
+    }
+
+    if (!publishId) {
+        throw new Error(
+            "publishId is required."
         );
     }
 
@@ -859,51 +906,108 @@ async function getPublishStatus(
                         `Bearer ${accessToken}`,
 
                     "Content-Type":
-                        "application/json"
+                        "application/json; charset=UTF-8"
                 },
 
-                timeout: 15000
+                timeout: 30000
             }
         );
 
     return response.data;
 }
 
-/*
-|--------------------------------------------------------------------------
-| Logout / disconnect
-|--------------------------------------------------------------------------
-*/
+// ======================================================
+// Legacy / direct init helper
+// ======================================================
 
-function logout(res) {
-    clearCookie(
-        res,
-        TOKEN_COOKIE
-    );
+async function initVideoPublish(
+    req,
+    options = {}
+) {
+    if (!options.videoSize) {
+        throw new Error(
+            "videoSize is required."
+        );
+    }
 
-    clearCookie(
-        res,
-        STATE_COOKIE
-    );
+    const chunkSize =
+        options.chunkSize ||
+        (
+            options.videoSize <=
+                MAX_CHUNK_SIZE
+                ? options.videoSize
+                : 10 * 1024 * 1024
+        );
+
+    const totalChunkCount =
+        options.totalChunkCount ||
+        Math.ceil(
+            options.videoSize /
+            chunkSize
+        );
+
+    const response =
+        await initializeFileUpload(
+            req,
+            {
+                title:
+                    options.title,
+
+                privacyLevel:
+                    options.privacyLevel ||
+                    DEFAULT_PRIVACY_LEVEL,
+
+                disableDuet:
+                    options.disableDuet,
+
+                disableComment:
+                    options.disableComment,
+
+                disableStitch:
+                    options.disableStitch,
+
+                videoSize:
+                    options.videoSize,
+
+                chunkSize,
+
+                totalChunkCount
+            }
+        );
+
+    return response.data;
 }
 
+// ======================================================
+// Exports
+// ======================================================
+
 module.exports = {
+    getTikTokAuthUrl,
+
     getTikTokAuthRequest,
+
     exchangeCodeForToken,
 
     saveTokenCookie,
+
     saveStateCookie,
 
     validateRequestState,
 
-    getSession,
-    getStoredToken,
-
     getCreatorInfo,
+
+    initVideoPublish,
 
     uploadVideoToTikTok,
 
     getPublishStatus,
 
-    logout
+    getStoredToken,
+
+    getTokenData,
+
+    isAuthenticated,
+
+    validateState
 };
