@@ -12,10 +12,10 @@
     <p><a href="/auth/tiktok">Connect TikTok</a></p>
 
     <h2>Publish video</h2>
-    <form action="/tiktok/post" method="POST">
+    <form action="/tiktok/post" method="POST" enctype="multipart/form-data">
         <label>
-            Video URL:<br />
-            <input type="text" name="video_url" value="https://example.com/video.mp4" size="80" />
+            Video file:<br />
+            <input type="file" name="video" accept="video/mp4,video/quicktime,video/webm" required />
         </label>
         <br /><br />
         <label>
