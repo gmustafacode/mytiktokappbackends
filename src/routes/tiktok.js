@@ -55,7 +55,9 @@ router.get('/auth/tiktok/callback', async (req, res) => {
         return res.json({
             message: 'TikTok OAuth successful',
             state,
-            token: tokenData
+            open_id: tokenData.open_id,
+            scope: tokenData.scope,
+            expires_in: tokenData.expires_in
         });
     } catch (error) {
         console.error('TikTok callback exchange failed:', error.response?.data || error.message);
@@ -105,7 +107,7 @@ router.post('/tiktok/post', upload.single('video'), async (req, res) => {
         });
     } catch (error) {
         console.error('TikTok init publish failed:', error.response?.data || error.message);
-        return res.status(500).json({
+        return res.status(error.response?.status || 500).json({
             error: 'Failed to initialize TikTok video publishing',
             detail: error.response?.data || error.message
         });
@@ -132,7 +134,7 @@ router.get('/tiktok/status/:publishId', async (req, res) => {
         return res.json(statusResponse);
     } catch (error) {
         console.error('TikTok publish status failed:', error.response?.data || error.message);
-        return res.status(500).json({
+        return res.status(error.response?.status || 500).json({
             error: 'Failed to fetch TikTok publish status',
             detail: error.response?.data || error.message
         });

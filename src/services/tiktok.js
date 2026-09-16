@@ -387,10 +387,10 @@ async function uploadVideoToTikTok(file, postOptions = {}) {
     const initPayload = {
         post_info: {
             title: postOptions.title || "Posted from my app",
-            privacy_level: postOptions.privacyLevel || "SELF_ONLY",
-            disable_duet: postOptions.disableDuet === true,
-            disable_comment: postOptions.disableComment === true,
-            disable_stitch: postOptions.disableStitch === true
+            privacy_level: "SELF_ONLY",
+            disable_duet: false,
+            disable_comment: false,
+            disable_stitch: false
         },
         source_info: {
             source: "FILE_UPLOAD",
