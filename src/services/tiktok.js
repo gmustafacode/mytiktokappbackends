@@ -1,5 +1,5 @@
 const axios = require("axios");
-const { randomUUID } = require("crypto");
+const { randomUUID, createCipheriv, createDecipheriv, createHash } = require("crypto");
 
 // ============================================================
 // TIKTOK TOKEN STORE
@@ -18,6 +18,77 @@ const tokenStore = {
 };
 
 const stateStore = new Set();
+const tokenCookieName = "tiktok_session";
+const stateCookieName = "tiktok_oauth_state";
+
+function getSessionKey() {
+    if (!process.env.SESSION_SECRET) {
+        throw new Error("SESSION_SECRET is missing in .env");
+    }
+
+    return createHash("sha256").update(process.env.SESSION_SECRET).digest();
+}
+
+function encrypt(value) {
+    const iv = require("crypto").randomBytes(12);
+    const cipher = createCipheriv("aes-256-gcm", getSessionKey(), iv);
+    const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
+    return [iv.toString("base64url"), cipher.getAuthTag().toString("base64url"), encrypted.toString("base64url")].join(".");
+}
+
+function decrypt(value) {
+    try {
+        const [ivText, tagText, encryptedText] = value.split(".");
+        const decipher = createDecipheriv("aes-256-gcm", getSessionKey(), Buffer.from(ivText, "base64url"));
+        decipher.setAuthTag(Buffer.from(tagText, "base64url"));
+        const decrypted = Buffer.concat([
+            decipher.update(Buffer.from(encryptedText, "base64url")),
+            decipher.final()
+        ]);
+        return JSON.parse(decrypted.toString("utf8"));
+    } catch {
+        return null;
+    }
+}
+
+function parseCookies(req) {
+    return Object.fromEntries((req.headers.cookie || "").split(";").filter(Boolean).map((part) => {
+        const index = part.indexOf("=");
+        return [part.slice(0, index).trim(), decodeURIComponent(part.slice(index + 1))];
+    }));
+}
+
+function appendCookie(res, name, value, maxAge) {
+    const cookie = `${name}=${encodeURIComponent(value)}; Max-Age=${maxAge}; Path=/; HttpOnly; SameSite=Lax${process.env.NODE_ENV === "production" ? "; Secure" : ""}`;
+    const existing = res.getHeader("Set-Cookie");
+    res.setHeader("Set-Cookie", existing ? [].concat(existing, cookie) : cookie);
+}
+
+function saveTokenCookie(res, payload) {
+    appendCookie(res, tokenCookieName, encrypt({
+        accessToken: payload.access_token,
+        refreshToken: payload.refresh_token || null,
+        expiresAt: payload.expires_in ? Date.now() + Number(payload.expires_in) * 1000 : null,
+        openId: payload.open_id || null,
+        scope: payload.scope || null
+    }), 30 * 24 * 60 * 60);
+}
+
+function saveStateCookie(res, state) {
+    appendCookie(res, stateCookieName, encrypt({ state }), 10 * 60);
+}
+
+function getTokenFromRequest(req) {
+    const cookies = parseCookies(req);
+    const session = cookies[tokenCookieName] ? decrypt(cookies[tokenCookieName]) : null;
+    return session?.accessToken || tokenStore.accessToken;
+}
+
+function getStateFromRequest(req) {
+    const cookies = parseCookies(req);
+    const saved = cookies[stateCookieName] ? decrypt(cookies[stateCookieName]) : null;
+    return saved?.state || null;
+}
 
 
 // ============================================================
@@ -45,8 +116,8 @@ function setTokenData(payload = {}) {
 // GET STORED ACCESS TOKEN
 // ============================================================
 
-function getStoredToken() {
-    return tokenStore.accessToken;
+function getStoredToken(req) {
+    return req ? getTokenFromRequest(req) : tokenStore.accessToken;
 }
 
 
@@ -78,6 +149,10 @@ function validateState(state) {
     }
 
     return isValid;
+}
+
+function validateRequestState(req, state) {
+    return validateState(state) || getStateFromRequest(req) === state;
 }
 
 
@@ -120,6 +195,22 @@ function getTikTokAuthUrl() {
     console.log("========================================");
 
     return authUrl;
+}
+
+function getTikTokAuthRequest() {
+    const state = randomUUID();
+    const params = new URLSearchParams({
+        client_key: process.env.TIKTOK_CLIENT_KEY,
+        response_type: "code",
+        scope: "user.info.basic,video.publish",
+        redirect_uri: process.env.TIKTOK_REDIRECT_URI,
+        state
+    });
+
+    return {
+        state,
+        url: `https://www.tiktok.com/v2/auth/authorize/?${params.toString()}`
+    };
 }
 
 
@@ -285,8 +376,8 @@ async function exchangeCodeForToken(code) {
 // GET CREATOR INFO
 // ============================================================
 
-async function getCreatorInfo() {
-    const accessToken = getStoredToken();
+async function getCreatorInfo(req) {
+    const accessToken = getStoredToken(req);
 
     if (!accessToken) {
         throw new Error(
@@ -366,8 +457,8 @@ async function initVideoPublish(postPayload) {
     }
 }
 
-async function uploadVideoToTikTok(file, postOptions = {}) {
-    const accessToken = getStoredToken();
+async function uploadVideoToTikTok(file, postOptions = {}, req) {
+    const accessToken = getStoredToken(req);
 
     if (!accessToken) {
         throw new Error("No TikTok access token available. Complete OAuth first.");
@@ -460,8 +551,8 @@ async function uploadVideoToTikTok(file, postOptions = {}) {
 // GET VIDEO PUBLISH STATUS
 // ============================================================
 
-async function getPublishStatus(publishId) {
-    const accessToken = getStoredToken();
+async function getPublishStatus(publishId, req) {
+    const accessToken = getStoredToken(req);
 
     if (!accessToken) {
         throw new Error(
@@ -534,7 +625,11 @@ function isAuthenticated() {
 
 module.exports = {
     getTikTokAuthUrl,
+    getTikTokAuthRequest,
     exchangeCodeForToken,
+    saveTokenCookie,
+    saveStateCookie,
+    validateRequestState,
     getCreatorInfo,
     initVideoPublish,
     uploadVideoToTikTok,

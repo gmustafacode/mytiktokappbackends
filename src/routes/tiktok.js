@@ -16,17 +16,20 @@ const upload = multer({
 });
 
 const {
-    getTikTokAuthUrl,
+    getTikTokAuthRequest,
     exchangeCodeForToken,
+    saveTokenCookie,
+    saveStateCookie,
     getCreatorInfo,
     uploadVideoToTikTok,
     getPublishStatus,
-    validateState
+    validateRequestState
 } = require('../services/tiktok');
 
 router.get('/auth/tiktok', (req, res) => {
-    const authUrl = getTikTokAuthUrl();
-    return res.redirect(authUrl);
+    const authRequest = getTikTokAuthRequest();
+    saveStateCookie(res, authRequest.state);
+    return res.redirect(authRequest.url);
 });
 
 router.get('/auth/tiktok/callback', async (req, res) => {
@@ -39,7 +42,7 @@ router.get('/auth/tiktok/callback', async (req, res) => {
         });
     }
 
-    if (!state || !validateState(state)) {
+    if (!state || !validateRequestState(req, state)) {
         return res.status(400).json({
             error: 'Invalid OAuth state. Please restart the TikTok login flow.'
         });
@@ -51,6 +54,7 @@ router.get('/auth/tiktok/callback', async (req, res) => {
 
     try {
         const tokenData = await exchangeCodeForToken(code);
+        saveTokenCookie(res, tokenData);
 
         return res.json({
             message: 'TikTok OAuth successful',
@@ -70,7 +74,7 @@ router.get('/auth/tiktok/callback', async (req, res) => {
 
 router.get('/tiktok/creator', async (req, res) => {
     try {
-        const creatorInfo = await getCreatorInfo();
+        const creatorInfo = await getCreatorInfo(req);
         return res.json(creatorInfo);
     } catch (error) {
         console.error('TikTok creator query failed:', error.response?.data || error.message);
@@ -95,7 +99,7 @@ router.post('/tiktok/post', upload.single('video'), async (req, res) => {
             disableDuet: disable_duet === 'true',
             disableComment: disable_comment === 'true',
             disableStitch: disable_stitch === 'true'
-        });
+        }, req);
 
         return res.json({
             message: 'Video uploaded to TikTok successfully',
@@ -130,7 +134,7 @@ router.get('/tiktok/status/:publishId', async (req, res) => {
     const { publishId } = req.params;
 
     try {
-        const statusResponse = await getPublishStatus(publishId);
+        const statusResponse = await getPublishStatus(publishId, req);
         return res.json(statusResponse);
     } catch (error) {
         console.error('TikTok publish status failed:', error.response?.data || error.message);
