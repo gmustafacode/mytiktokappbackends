@@ -12,8 +12,7 @@ const missingEnv = requiredEnv.filter((key) => !process.env[key]);
 
 if (missingEnv.length > 0) {
     console.error(`Missing required env vars: ${missingEnv.join(', ')}`);
-    console.error('Update the .env file and restart the server.');
-    process.exit(1);
+    console.error('Set these variables in the local .env or Vercel Project Settings.');
 }
 
 app.use(express.json({ limit: '50mb' }));
@@ -38,8 +37,12 @@ app.get('/health', (req, res) => {
     res.json({ status: 'ok', message: 'TikTok API server is healthy.' });
 });
 
-app.listen(PORT, () => {
-    console.log(`TikTok API server running on http://localhost:${PORT}`);
-    console.log(`Terms: https://mytiktokappbackends.vercel.app/terms`);
-    console.log(`Privacy: https://mytiktokappbackends.vercel.app/privacy`);
-});
+if (require.main === module) {
+    app.listen(PORT, () => {
+        console.log(`TikTok API server running on http://localhost:${PORT}`);
+        console.log(`Terms: https://mytiktokappbackends.vercel.app/terms`);
+        console.log(`Privacy: https://mytiktokappbackends.vercel.app/privacy`);
+    });
+}
+
+module.exports = app;
