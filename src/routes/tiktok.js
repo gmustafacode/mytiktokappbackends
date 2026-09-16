@@ -7,7 +7,8 @@ const {
     getCreatorInfo,
     initVideoPublish,
     getPublishStatus,
-    getStoredToken
+    getStoredToken,
+    validateState
 } = require('../services/tiktok');
 
 router.get('/auth/tiktok', (req, res) => {
@@ -22,6 +23,12 @@ router.get('/auth/tiktok/callback', async (req, res) => {
         return res.status(400).json({
             error: 'TikTok authorization failed',
             detail: error
+        });
+    }
+
+    if (!state || !validateState(state)) {
+        return res.status(400).json({
+            error: 'Invalid OAuth state. Please restart the TikTok login flow.'
         });
     }
 

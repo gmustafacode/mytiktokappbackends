@@ -34,8 +34,12 @@ app.get('/privacy', (req, res) => {
     res.sendFile(path.join(__dirname, '../public/privacy.html'));
 });
 
+app.get('/health', (req, res) => {
+    res.json({ status: 'ok', message: 'TikTok API server is healthy.' });
+});
+
 app.listen(PORT, () => {
     console.log(`TikTok API server running on http://localhost:${PORT}`);
     console.log(`Terms: https://mytiktokappbackends.vercel.app/terms`);
     console.log(`Privacy: https://mytiktokappbackends.vercel.app/privacy`);
-})
+});
