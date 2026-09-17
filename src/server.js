@@ -119,6 +119,18 @@ app.get(
     }
 );
 
+app.get(
+    "/facebook/privacy",
+    (req, res) => {
+        res.sendFile(
+            path.join(
+                __dirname,
+                "../public/facebook/privacy.html"
+            )
+        );
+    }
+);
+
 // ======================================================
 // Health
 // ======================================================
